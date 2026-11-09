@@ -5,9 +5,10 @@
 # Commands from Kurisu934/FanControl.MechrevoPtl (MIT), validated there on P916F-PTL BIOS 1.01:
 #   D6 <pwm 0-255> shared PWM for both fans, D5 10 back to automatic. NOT yet tested on this machine.
 # Manual PWM bypasses the EC temperature curve, so the script restores auto when it ends, on Ctrl+C,
-# and early if the temperature reaches -MaxTempC. It re-sends the PWM every 5 seconds while holding.
+# and early if the temperature reaches -MaxTempC. It re-sends the PWM every 5 seconds while holding,
+# unless -NoResend, which sends it once to see whether the EC keeps a manual speed on its own.
 param([ValidateSet('status', 'set', 'auto')][string]$Action = 'status', [ValidateRange(30, 100)][int]$Percent = 100,
-      [ValidateRange(5, 600)][int]$Seconds = 60, [int]$MaxTempC = 90)
+      [ValidateRange(5, 600)][int]$Seconds = 60, [int]$MaxTempC = 90, [switch]$NoResend)
 $ErrorActionPreference = 'Stop'
 
 $board = (Get-CimInstance Win32_BaseBoard).Product
@@ -98,10 +99,10 @@ try {
 
     Show $ec 'before'
     $pwm = [math]::Round($Percent * 255 / 100)
-    "Holding both fans at $Percent% (D6 $('{0:X2}' -f [int]$pwm)) for $Seconds s. Ctrl+C stops early and restores auto."
+    "Holding both fans at $Percent% (D6 $('{0:X2}' -f [int]$pwm)) for $Seconds s$(if ($NoResend) { ', sent once' }). Ctrl+C stops early and restores auto."
     $sw = [Diagnostics.Stopwatch]::StartNew(); $next = 0
     while ($sw.Elapsed.TotalSeconds -lt $Seconds) {
-        if ($sw.Elapsed.TotalSeconds -ge $next) { $ec.SetPwm($Percent); $next += 5 }
+        if ($sw.Elapsed.TotalSeconds -ge $next) { $ec.SetPwm($Percent); $next = if ($NoResend) { [double]::MaxValue } else { $next + 5 } }
         Show $ec "$Percent%"
         $t = Read-Temp
         if ($t -ge $MaxTempC) { "Temperature $t C reached $MaxTempC C, stopping early."; break }

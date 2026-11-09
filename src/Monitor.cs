@@ -73,7 +73,8 @@ namespace XingyaoPerf
     // Samples sensors on a background thread so slow WMI or EC calls never block the UI.
     internal sealed class Monitor : IDisposable
     {
-        const int IntervalMs = 2000, ModeEveryTicks = 3, RestoreWindowSeconds = 60, SleepGapSeconds = 30;
+        // One sample a second, plus the time the sample takes. Other checks count samples, so they are in seconds.
+        const int IntervalMs = 1000, ModeEveryTicks = 6, FanResendTicks = 6, RestoreWindowSeconds = 60, SleepGapSeconds = 30;
 
         public readonly Firmware Firmware = new Firmware();
         readonly Settings settings;
@@ -130,7 +131,7 @@ namespace XingyaoPerf
                 if (tempPauseTicks > 0) tempPauseTicks--;
                 else
                     try { s.TempC = temp.Read(); }
-                    catch (Exception e) { Log.Write("temperature: " + e.Message); tempPauseTicks = 30; }
+                    catch (Exception e) { Log.Write("temperature: " + e.Message); tempPauseTicks = 60; }
             }
             if (gpu != null) try { s.GpuMhz = gpu.ReadMhz(); } catch (Exception e) { Log.Write("gpu: " + e.Message); }
             if (fans != null)
@@ -142,7 +143,7 @@ namespace XingyaoPerf
                     try { fans.Read(out s.Fan0, out s.Fan1); fanFailures = 0; }
                     catch (Exception e)
                     {
-                        if (++fanFailures == 5) { Log.Write("fan read pausing: " + e.Message); fanPauseTicks = 15; fanFailures = 0; }
+                        if (++fanFailures == 5) { Log.Write("fan read pausing: " + e.Message); fanPauseTicks = 30; fanFailures = 0; }
                     }
                 }
             }
@@ -157,12 +158,15 @@ namespace XingyaoPerf
             if (fans != null) try { fans.SetFanAuto(); } catch (Exception e) { Log.Write("fan auto at start: " + e.Message); }
             int tick = 0;
             var last = DateTime.UtcNow;
+            bool checkCaps = true;
             while (running)
             {
                 var now = DateTime.UtcNow;
-                if ((now - last).TotalSeconds > SleepGapSeconds) restoreUntil = now.AddSeconds(RestoreWindowSeconds); // woke from sleep
+                if ((now - last).TotalSeconds > SleepGapSeconds) { restoreUntil = now.AddSeconds(RestoreWindowSeconds); checkCaps = true; } // woke from sleep
                 last = now;
-                if (tick % 30 == 1) { KeepGpuCap(); KeepCpuCap(); } // shortly after start, then every minute
+                // The caps are only lost on a restart, driver reset or power plan change, so they are checked
+                // a few seconds after start and after waking, not continuously.
+                if (checkCaps && tick >= 3) { KeepGpuCap(); KeepCpuCap(); checkCaps = false; }
                 if (tick++ % ModeEveryTicks == 0) CheckMode();
                 latest = SampleOnce();
                 if (fanPercent > 0) KeepFan(latest, tick);
@@ -238,13 +242,13 @@ namespace XingyaoPerf
         }
 
         // While manual: hand back to the EC when hot or when the temperature cannot be read, and re-send the
-        // speed every 3 samples (6 s) in case the EC drops it.
+        // speed every 6 s in case the EC drops it.
         void KeepFan(Snapshot s, int tick)
         {
-            if (double.IsNaN(s.TempC)) { if (++fanUnknownTemp >= 3) { ReleaseFan("读不到温度"); return; } }
+            if (double.IsNaN(s.TempC)) { if (++fanUnknownTemp >= 6) { ReleaseFan("读不到温度"); return; } }
             else fanUnknownTemp = 0;
             if (s.TempC >= FanSafeTempC) { ReleaseFan("温度 " + s.TempC.ToString("0") + " °C"); return; }
-            if (tick % 3 == 0)
+            if (tick % FanResendTicks == 0)
             {
                 var f = fans;
                 try { if (f != null) f.SetFanPercent(fanPercent); } catch (Exception e) { Log.Write("fan resend: " + e.Message); }
@@ -254,7 +258,7 @@ namespace XingyaoPerf
         // Before sleep the EC must own the fans again.
         public void OnSuspend() { if (fanPercent > 0) ReleaseFan("睡眠"); }
 
-        // GPU frequency cap. The driver can drop it after a restart or driver update, so it is checked every minute.
+        // GPU frequency cap. The driver can drop it after a restart or driver update, so it is checked a few seconds after start and after waking.
         public bool GpuCapAvailable { get { var g = gpu; return g != null && g.CanControl; } }
         public double GpuHwMaxMhz { get { var g = gpu; return g == null ? 0 : g.HwMaxMhz; } }
 

@@ -4,6 +4,8 @@ Tiny tray app for one laptop: MECHREVO Xingyao 14, board `XINGYAO Series-P916F-P
 
 Protocol details and test results are in `docs/protocol.md`.
 
+Version: `src/Version.cs` and `src/app.manifest` (currently 0.9.0). Bump both on every commit the user asks for, and tag it `vX.Y.Z`.
+
 ## Safety
 
 - Writing to firmware or the EC can harm the machine. Only send commands already verified in `docs/protocol.md`, and tell the user before anything new.

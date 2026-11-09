@@ -153,6 +153,7 @@ namespace XingyaoPerf
             menu.Items.Add(weatherItem);
             menu.Items.Add(startupItem);
             menu.Items.Add(new ToolStripSeparator());
+            menu.Items.Add(new ToolStripMenuItem("版本 " + AppVersion.Text) { Enabled = false });
             menu.Items.Add("退出", null, (s, e) => Quit());
             menu.Opening += (s, e) => { startupItem.Checked = Startup.Enabled; RefreshCharge(); RefreshCaps(); };
 
