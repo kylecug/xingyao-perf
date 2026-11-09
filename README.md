@@ -13,7 +13,7 @@
 | `scripts/probe-mode.ps1` | 读取当前模式 | 否 |
 | `scripts/switch-test.ps1` | 切到办公模式，观察 15 秒后恢复 | 是 |
 | `scripts/effect-test.ps1` | 三档依次满载，对比功耗和运算量，结束后恢复 | 是 |
-| `scripts/thermal-test.ps1` | 满载时记录功耗、频率、温度和风扇转速；`-Mode keep` 时不写入 | 默认是 |
+| `scripts/thermal-test.ps1` | 满载时记录功耗、频率、温度和风扇转速；`-Load cpu|gpu|both` 选择负载；`-Mode keep` 时不写入 | 默认是 |
 
 ```powershell
 powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\probe-mode.ps1

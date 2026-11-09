@@ -83,3 +83,7 @@
 | GPU 频率 | Intel `ControlLib.dll` | 未测试 |
 | 封装温度 | `root\WMI` `EsifDeviceInformation.Temperature`，需管理员（实现见 open-revo 的 `esif_thermal.rs`） | 待本机确认；ACPI 热区固定为 28°C，不可用 |
 | 风扇转速 | PM2 端口，见上文 | 待本机确认 |
+
+## 核显负载观察
+
+平衡模式下只跑 OpenCL 核显负载 15 秒：封装约 41 W，`pp1` 约 30 W。`pp1` 随核显负载上升，可作为核显功耗来源。这高于只跑 CPU 时的持续 31.9 W，说明只跑 CPU 时限制它的不一定是封装功耗上限。这只是短时结果，持续表现待 `thermal-test.ps1 -Load both` 确认。
