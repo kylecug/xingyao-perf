@@ -18,12 +18,10 @@ Reboot auto-start and kept mode are confirmed from logs; the user has not yet co
 
 ## Running without the official background
 
-The official background is currently disabled on this machine with `scripts/vendor-service.ps1` (`-Action status|disable|restore`). Mode switching, monitoring, Fn keys, sleep and wake, and reboot all passed; see `docs/protocol.md`.
+The official background is currently disabled on this machine with `scripts/vendor-service.ps1` (`-Action status|disable|restore`). Mode switching, monitoring, Fn keys, sleep and wake, reboot, and charging all passed; see `docs/protocol.md`. With the background off, the battery charges to 100% with no limit, so the only known loss is charge protection.
 
-Still open: charging. The user's monitor powers the laptop over USB-C, so unplugging also loses the display. When the battery has dropped to about 85-90% from normal use, recharge on the monitor cable, then run `scripts/battery-read.ps1 -Label after-recharge`. If it stops early, repeat with the original adapter.
-
-If anything needed is lost, run `restore`. Do not suggest uninstalling the official software until this passes. An uninstall might also remove `inpoutx64`, which fan reading needs, so check that first.
+If anything needed is lost, run `restore`. Before suggesting an uninstall of the official software, check whether it would remove `inpoutx64`, which fan reading needs.
 
 ## Next feature: battery charge limit
 
-Thresholds read `enabled=0, lower=0, upper=0` with `battery-read.ps1`. Write commands have never been sent here, and BIOS 1.01 is unverified for them. Tell the user the exact commands before a single test write. Testing also needs the battery below the limit, so it waits for the same discharge.
+Thresholds read `enabled=0, lower=0, upper=0` with `battery-read.ps1`. Write commands have never been sent here, and BIOS 1.01 is unverified for them. Tell the user the exact commands before a single test write. Testing needs the battery below the limit before plugging in, for example under 80% for an 80% limit.

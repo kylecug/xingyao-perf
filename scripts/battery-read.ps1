@@ -11,7 +11,8 @@ if ($board -ne 'XINGYAO Series-P916F-PTL' -or $bios -notmatch '1\.01') { "STOP: 
 $hash = (Get-FileHash "$env:WINDIR\System32\drivers\inpoutx64.sys" -Algorithm SHA256).Hash
 if ($hash -ne 'F8965FDCE668692C3785AFA3559159F9A18287BC0D53ABB21902895A8ECF221B') { 'STOP: inpoutx64 driver differs from the verified version. Nothing sent.'; return }
 
-Add-Type -TypeDefinition @'
+# A type can be added only once per PowerShell session, so a second run in the same window reuses it.
+if (-not ('BatteryEc' -as [type])) { Add-Type -TypeDefinition @'
 using System;
 using System.Runtime.InteropServices;
 using System.Threading;
@@ -57,7 +58,7 @@ public sealed class BatteryEc : IDisposable {
     }
     public void Dispose() { h.Dispose(); mutex.Dispose(); }
 }
-'@
+'@ }
 
 $ec = New-Object BatteryEc
 try { $v = $ec.Read() } finally { $ec.Dispose() }
