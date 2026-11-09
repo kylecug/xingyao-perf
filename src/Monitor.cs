@@ -105,11 +105,11 @@ namespace XingyaoPerf
         // Quiet mode: the fans stop once the package has been cool and lightly loaded for a while, and go back
         // to the EC curve the moment it warms up. The package sensor jumps by 20 C from one second to the next
         // at idle, so stopping uses 30-second averages and going back a 5-second average, with a single-reading
-        // limit and a power limit as backstops.
-        const double QuietOffC = 50, QuietOffW = 13, QuietBackC = 55, QuietBackSpikeC = 75, QuietBackW = 15;
-        const int QuietWindow = 30, QuietBackWindow = 5, StallSeconds = 5;
+        // limit and a 10-second power average as backstops.
+        const double QuietOffC = 50, QuietOffW = 13, QuietBackC = 55, QuietBackSpikeC = 75, QuietBackW = 20;
+        const int QuietWindow = 30, QuietBackWindow = 5, QuietBackPowerWindow = 10, StallSeconds = 5;
         volatile bool fanQuiet, fanStopped;
-        int quietCool, quietPower; // quietCool: samples since the quiet logic last changed state
+        int quietCool; // samples since the quiet logic last changed state
         readonly double[] quietTemps = new double[QuietWindow], quietPowers = new double[QuietWindow];
         int quietNext;
         DateTime lastSampleAt = DateTime.UtcNow;
@@ -310,15 +310,20 @@ namespace XingyaoPerf
                 if (double.IsNaN(t)) why = "读不到温度";
                 else if (t >= QuietBackSpikeC) why = "温度 " + t.ToString("0") + " °C";
                 else if (recent >= QuietBackC) why = "5 秒平均温度 " + recent.ToString("0") + " °C";
-                else if (!double.IsNaN(w) && w >= QuietBackW) { if (++quietPower >= 2) why = "功耗 " + w.ToString("0") + " W"; }
-                else quietPower = 0;
+                else
+                {
+                    // A 10-second average, so the short single-core bursts of opening files (about 13 W) do not
+                    // start the fans, while sustained load such as a game does, before the package heats up.
+                    double rw = Recent(quietPowers, QuietBackPowerWindow);
+                    if (rw >= QuietBackW) why = "10 秒平均功耗 " + rw.ToString("0") + " W";
+                }
                 if (why != null) QuietBack(why);
                 return;
             }
             if (quietCool < QuietWindow) return; // a full window since start or since the fans last came back
             double avgT = Recent(quietTemps, QuietWindow), avgW = Recent(quietPowers, QuietWindow);
             if (double.IsNaN(avgT) || double.IsNaN(avgW) || avgT > QuietOffC || avgW > QuietOffW) return;
-            try { f.SetFanOff(); fanStopped = true; quietPower = 0; quietCool = 0; Log.Write("quiet: fans stopped, 30 s average " + avgT.ToString("0") + " C, " + avgW.ToString("0.0") + " W"); }
+            try { f.SetFanOff(); fanStopped = true; quietCool = 0; Log.Write("quiet: fans stopped, 30 s average " + avgT.ToString("0") + " C, " + avgW.ToString("0.0") + " W"); }
             catch (Exception e) { Log.Write("quiet: stop failed: " + e.Message); }
         }
 
@@ -327,7 +332,7 @@ namespace XingyaoPerf
         {
             var f = fans;
             try { if (f != null) f.SetFanAuto(); } catch (Exception e) { Log.Write("quiet: back to EC failed: " + e.Message); return; }
-            fanStopped = false; quietCool = 0; quietPower = 0;
+            fanStopped = false; quietCool = 0;
             Log.Write("quiet: fans back to EC (" + why + ")");
         }
 
