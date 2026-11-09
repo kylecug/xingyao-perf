@@ -103,12 +103,13 @@ namespace XingyaoPerf
 
         // Quiet mode: the fans stop once the package has been cool and lightly loaded for a while, and go back
         // to the EC curve the moment it warms up. The package sensor jumps by 20 C from one second to the next
-        // at idle, so decisions use a 3-second average, with a single-reading limit as a backstop.
-        const double QuietOffC = 50, QuietOffW = 10, QuietBackC = 55, QuietBackSpikeC = 70, QuietBackW = 15;
-        const int QuietOffSeconds = 30, StallSeconds = 5;
+        // at idle, so stopping uses 30-second averages and going back a 5-second average, with a single-reading
+        // limit and a power limit as backstops.
+        const double QuietOffC = 50, QuietOffW = 10, QuietBackC = 55, QuietBackSpikeC = 75, QuietBackW = 15;
+        const int QuietWindow = 30, QuietBackWindow = 5, StallSeconds = 5;
         volatile bool fanQuiet, fanStopped;
-        int quietCool, quietPower;
-        readonly double[] quietTemps = { double.NaN, double.NaN, double.NaN };
+        int quietCool, quietPower; // quietCool: samples since the quiet logic last changed state
+        readonly double[] quietTemps = new double[QuietWindow], quietPowers = new double[QuietWindow];
         int quietNext;
         DateTime lastSampleAt = DateTime.UtcNow;
         public Snapshot Latest { get { return latest; } }
@@ -279,32 +280,45 @@ namespace XingyaoPerf
             if (s.TempC >= FanSafeTempC) ReleaseFan("温度 " + s.TempC.ToString("0") + " °C");
         }
 
+        // Mean of the newest n samples in a ring buffer; NaN if any is missing.
+        double Recent(double[] ring, int n)
+        {
+            double sum = 0;
+            for (int k = 1; k <= n; k++)
+            {
+                double x = ring[(quietNext - k + ring.Length) % ring.Length];
+                if (double.IsNaN(x)) return double.NaN;
+                sum += x;
+            }
+            return sum / n;
+        }
+
         void QuietFan(Snapshot s)
         {
             var f = fans;
             if (f == null) return;
             double t = s.TempC, w = s.PkgW;
-            quietTemps[quietNext] = t; quietNext = (quietNext + 1) % quietTemps.Length;
-            double sum = 0; int n = 0;
-            foreach (var x in quietTemps) if (!double.IsNaN(x)) { sum += x; n++; }
-            double avg = n == 0 ? double.NaN : sum / n;
+            quietTemps[quietNext] = t; quietPowers[quietNext] = w;
+            quietNext = (quietNext + 1) % QuietWindow;
+            quietCool++;
 
             if (fanStopped)
             {
                 string why = null;
+                double recent = Recent(quietTemps, QuietBackWindow);
                 if (double.IsNaN(t)) why = "读不到温度";
                 else if (t >= QuietBackSpikeC) why = "温度 " + t.ToString("0") + " °C";
-                else if (avg >= QuietBackC) why = "平均温度 " + avg.ToString("0") + " °C";
+                else if (recent >= QuietBackC) why = "5 秒平均温度 " + recent.ToString("0") + " °C";
                 else if (!double.IsNaN(w) && w >= QuietBackW) { if (++quietPower >= 2) why = "功耗 " + w.ToString("0") + " W"; }
                 else quietPower = 0;
                 if (why != null) QuietBack(why);
                 return;
             }
-            bool cool = !double.IsNaN(avg) && n == quietTemps.Length && avg <= QuietOffC && !double.IsNaN(w) && w <= QuietOffW;
-            if (!cool) { quietCool = 0; return; }
-            if (++quietCool < QuietOffSeconds) return;
-            try { f.SetFanOff(); fanStopped = true; quietPower = 0; Log.Write("quiet: fans stopped at " + avg.ToString("0") + " C, " + w.ToString("0.0") + " W"); }
-            catch (Exception e) { Log.Write("quiet: stop failed: " + e.Message); quietCool = 0; }
+            if (quietCool < QuietWindow) return; // a full window since start or since the fans last came back
+            double avgT = Recent(quietTemps, QuietWindow), avgW = Recent(quietPowers, QuietWindow);
+            if (double.IsNaN(avgT) || double.IsNaN(avgW) || avgT > QuietOffC || avgW > QuietOffW) return;
+            try { f.SetFanOff(); fanStopped = true; quietPower = 0; quietCool = 0; Log.Write("quiet: fans stopped, 30 s average " + avgT.ToString("0") + " C, " + avgW.ToString("0.0") + " W"); }
+            catch (Exception e) { Log.Write("quiet: stop failed: " + e.Message); }
         }
 
         // Back to the EC curve while staying in quiet mode; the cool period starts over.
