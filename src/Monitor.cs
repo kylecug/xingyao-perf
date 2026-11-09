@@ -30,6 +30,7 @@ namespace XingyaoPerf
         public int GpuMaxMhz; // 0 = no cap; reapplied because the driver may reset it
         public int CpuMaxMhz; // old frequency cap; only read so it can be cleared once
         public int CpuState = 100; // maximum processor state in percent; reapplied in case the plan changes
+        public bool FanQuiet; // quiet fan mode: fans stop while cool, the EC curve otherwise
         public int GameOverlay = 1; // 0 off, 1 listed games only, 2 any fullscreen app (and listed games)
         public string Games = ""; // extra game process names without .exe, separated by |, beyond the ones Windows recognises
 
@@ -45,6 +46,7 @@ namespace XingyaoPerf
                     if (kv[0] == "mode") int.TryParse(kv[1], out s.Mode);
                     else if (kv[0] == "overlay") s.Overlay = kv[1] != "0";
                     else if (kv[0] == "avoidweather") s.AvoidWeather = kv[1] != "0";
+                    else if (kv[0] == "fanquiet") s.FanQuiet = kv[1] == "1";
                     else if (kv[0] == "gameoverlay") { int.TryParse(kv[1], out s.GameOverlay); if (s.GameOverlay < 0 || s.GameOverlay > 2) s.GameOverlay = 1; }
                     else if (kv[0] == "games") s.Games = kv[1];
                     else if (kv[0] == "gpumax") int.TryParse(kv[1], out s.GpuMaxMhz);
@@ -64,7 +66,7 @@ namespace XingyaoPerf
             try
             {
                 Directory.CreateDirectory(Log.Dir);
-                File.WriteAllText(FilePath, "mode=" + Mode + "\noverlay=" + (Overlay ? "1" : "0") + "\navoidweather=" + (AvoidWeather ? "1" : "0") + "\nlayout=" + Layout + "\ngameoverlay=" + GameOverlay + "\ngames=" + Games + "\ngpumax=" + GpuMaxMhz + "\ncpumax=" + CpuMaxMhz + "\ncpustate=" + CpuState + "\n");
+                File.WriteAllText(FilePath, "mode=" + Mode + "\noverlay=" + (Overlay ? "1" : "0") + "\navoidweather=" + (AvoidWeather ? "1" : "0") + "\nlayout=" + Layout + "\ngameoverlay=" + GameOverlay + "\ngames=" + Games + "\ngpumax=" + GpuMaxMhz + "\ncpumax=" + CpuMaxMhz + "\ncpustate=" + CpuState + "\nfanquiet=" + (FanQuiet ? "1" : "0") + "\n");
             }
             catch (Exception e) { Log.Write("save settings: " + e.Message); }
         }
@@ -95,7 +97,20 @@ namespace XingyaoPerf
         const double FanSafeTempC = 85;
         volatile int fanPercent;
         int fanUnknownTemp;
-        public int FanPercent { get { return fanPercent; } }
+        // The menu shows -1 for the quiet mode.
+        public const int FanQuietLevel = -1;
+        public int FanPercent { get { return fanQuiet ? FanQuietLevel : fanPercent; } }
+
+        // Quiet mode: the fans stop once the package has been cool and lightly loaded for a while, and go back
+        // to the EC curve the moment it warms up. The package sensor jumps by 20 C from one second to the next
+        // at idle, so decisions use a 3-second average, with a single-reading limit as a backstop.
+        const double QuietOffC = 50, QuietOffW = 10, QuietBackC = 55, QuietBackSpikeC = 70, QuietBackW = 15;
+        const int QuietOffSeconds = 30, StallSeconds = 5;
+        volatile bool fanQuiet, fanStopped;
+        int quietCool, quietPower;
+        readonly double[] quietTemps = { double.NaN, double.NaN, double.NaN };
+        int quietNext;
+        DateTime lastSampleAt = DateTime.UtcNow;
         public Snapshot Latest { get { return latest; } }
         public int CurrentMode { get { return currentMode; } }
 
@@ -156,6 +171,7 @@ namespace XingyaoPerf
             // A crash or power loss may have left a manual speed in the EC, so always start on the EC curve.
             // This is here, not in InitSensors, because --selftest must not write anything.
             if (fans != null) try { fans.SetFanAuto(); } catch (Exception e) { Log.Write("fan auto at start: " + e.Message); }
+            fanQuiet = fans != null && settings.FanQuiet; // the quiet mode is kept across restarts; it starts on the EC curve
             int tick = 0;
             var last = DateTime.UtcNow;
             bool checkCaps = true;
@@ -169,7 +185,9 @@ namespace XingyaoPerf
                 if (checkCaps && tick >= 3) { KeepGpuCap(); KeepCpuCap(); checkCaps = false; }
                 if (tick++ % ModeEveryTicks == 0) CheckMode();
                 latest = SampleOnce();
+                lastSampleAt = DateTime.UtcNow;
                 if (fanPercent > 0) KeepFan(latest);
+                else if (fanQuiet) QuietFan(latest);
                 Thread.Sleep(IntervalMs);
             }
         }
@@ -221,13 +239,24 @@ namespace XingyaoPerf
             Publish(mode);
         }
 
-        // 0 hands the fans back to the EC curve. Called from a worker thread.
+        // 0 hands the fans back to the EC curve, FanQuietLevel picks the quiet mode. Called from a worker thread.
         public void SetFan(int percent)
         {
             var f = fans;
             if (f == null) throw new InvalidOperationException("EC 端口不可用");
-            if (percent <= 0) { f.SetFanAuto(); fanPercent = 0; Log.Write("fan auto"); return; }
+            bool quiet = percent == FanQuietLevel;
+            if (settings.FanQuiet != quiet) { settings.FanQuiet = quiet; settings.Save(); }
+            fanQuiet = false;
+            quietCool = 0;
+            if (percent <= 0)
+            {
+                f.SetFanAuto(); fanPercent = 0; fanStopped = false;
+                fanQuiet = quiet;
+                Log.Write(quiet ? "fan quiet mode" : "fan auto");
+                return;
+            }
             f.SetFanPercent(percent);
+            fanStopped = false;
             fanPercent = percent;
             fanUnknownTemp = 0;
             Log.Write("fan manual " + percent + "%");
@@ -250,8 +279,55 @@ namespace XingyaoPerf
             if (s.TempC >= FanSafeTempC) ReleaseFan("温度 " + s.TempC.ToString("0") + " °C");
         }
 
-        // Before sleep the EC must own the fans again.
-        public void OnSuspend() { if (fanPercent > 0) ReleaseFan("睡眠"); }
+        void QuietFan(Snapshot s)
+        {
+            var f = fans;
+            if (f == null) return;
+            double t = s.TempC, w = s.PkgW;
+            quietTemps[quietNext] = t; quietNext = (quietNext + 1) % quietTemps.Length;
+            double sum = 0; int n = 0;
+            foreach (var x in quietTemps) if (!double.IsNaN(x)) { sum += x; n++; }
+            double avg = n == 0 ? double.NaN : sum / n;
+
+            if (fanStopped)
+            {
+                string why = null;
+                if (double.IsNaN(t)) why = "读不到温度";
+                else if (t >= QuietBackSpikeC) why = "温度 " + t.ToString("0") + " °C";
+                else if (avg >= QuietBackC) why = "平均温度 " + avg.ToString("0") + " °C";
+                else if (!double.IsNaN(w) && w >= QuietBackW) { if (++quietPower >= 2) why = "功耗 " + w.ToString("0") + " W"; }
+                else quietPower = 0;
+                if (why != null) QuietBack(why);
+                return;
+            }
+            bool cool = !double.IsNaN(avg) && n == quietTemps.Length && avg <= QuietOffC && !double.IsNaN(w) && w <= QuietOffW;
+            if (!cool) { quietCool = 0; return; }
+            if (++quietCool < QuietOffSeconds) return;
+            try { f.SetFanOff(); fanStopped = true; quietPower = 0; Log.Write("quiet: fans stopped at " + avg.ToString("0") + " C, " + w.ToString("0.0") + " W"); }
+            catch (Exception e) { Log.Write("quiet: stop failed: " + e.Message); quietCool = 0; }
+        }
+
+        // Back to the EC curve while staying in quiet mode; the cool period starts over.
+        void QuietBack(string why)
+        {
+            var f = fans;
+            try { if (f != null) f.SetFanAuto(); } catch (Exception e) { Log.Write("quiet: back to EC failed: " + e.Message); return; }
+            fanStopped = false; quietCool = 0; quietPower = 0;
+            Log.Write("quiet: fans back to EC (" + why + ")");
+        }
+
+        // Called on the UI timer. If sampling stalls while the fans are stopped, give them back to the EC from here.
+        public void Watchdog()
+        {
+            if (fanStopped && (DateTime.UtcNow - lastSampleAt).TotalSeconds > StallSeconds) QuietBack("采样停止");
+        }
+
+        // Before sleep the EC must own the fans again. Quiet mode stays on and starts over after waking.
+        public void OnSuspend()
+        {
+            if (fanPercent > 0) ReleaseFan("睡眠");
+            if (fanStopped) QuietBack("睡眠");
+        }
 
         // GPU frequency cap. The driver can drop it after a restart or driver update, so it is checked a few seconds after start and after waking.
         public bool GpuCapAvailable { get { var g = gpu; return g != null && g.CanControl; } }
@@ -328,7 +404,7 @@ namespace XingyaoPerf
         public void Dispose()
         {
             running = false;
-            if (fanPercent > 0) try { fans.SetFanAuto(); fanPercent = 0; Log.Write("fan auto at exit"); } catch (Exception e) { Log.Write("fan auto at exit: " + e.Message); }
+            if (fanPercent > 0 || fanStopped) try { fans.SetFanAuto(); fanPercent = 0; fanStopped = false; Log.Write("fan auto at exit"); } catch (Exception e) { Log.Write("fan auto at exit: " + e.Message); }
             if (thread.IsAlive) thread.Join(5000);
             if (counters != null) counters.Dispose();
             if (fans != null) fans.Dispose();

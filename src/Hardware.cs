@@ -198,6 +198,9 @@ namespace XingyaoPerf
 
         public void SetFanAuto() { Locked(() => Send(0xd5, 0x10, false)); }
 
+        // D6 00: both fans stop. Used only by the quiet mode, which hands back to the EC as soon as it warms up.
+        public void SetFanOff() { Locked(() => Send(0xd6, 0, false)); }
+
         // Returns enabled (0 or 1), lower (stop charging at) and upper (discharge above) percentages.
         public int[] ReadCharge()
         {
