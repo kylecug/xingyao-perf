@@ -37,6 +37,7 @@ namespace XingyaoPerf
         [DllImport("pdh.dll", CharSet = CharSet.Unicode)] public static extern int PdhAddEnglishCounter(IntPtr q, string path, IntPtr user, out IntPtr c);
         [DllImport("pdh.dll")] public static extern int PdhCollectQueryData(IntPtr q);
         [DllImport("pdh.dll")] public static extern int PdhGetFormattedCounterValue(IntPtr c, uint fmt, out uint type, out PDH_VALUE v);
+        [DllImport("pdh.dll", CharSet = CharSet.Unicode)] public static extern int PdhGetFormattedCounterArray(IntPtr c, uint fmt, ref uint size, out uint count, IntPtr buffer);
         [DllImport("pdh.dll")] public static extern int PdhCloseQuery(IntPtr q);
         public const uint PDH_FMT_DOUBLE = 0x200;
 

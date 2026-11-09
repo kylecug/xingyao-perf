@@ -13,10 +13,10 @@ namespace XingyaoPerf
     // A small per-pixel-alpha window that sits on the taskbar, just left of the tray.
     // Windows 11 has no taskbar widget API, so this floats above the taskbar rather than inside it.
     //
-    //   CPU | P 4.2 | E 3.8 | L 2.1 | 39.9 W |       | 6506 rpm
-    //   GPU |     2.10 GHz          | 22.4 W | 69 °C | 6282 rpm
+    //   CPU | 45% | P 4.2 | E 3.8 | L 2.1 | 39.9 W |       | 6506 rpm
+    //   GPU | 80% |     2.10 GHz          | 22.4 W | 69 °C | 6282 rpm
     //
-    // Frequency and power line up in columns. CPU and GPU share one package, so the
+    // Usage, frequency and power line up in columns. CPU and GPU share one package, so the
     // temperature spans both rows. The two fans are stacked but not tied to a row,
     // because which fan cools which part is not known.
     internal sealed class Overlay : Form
@@ -25,7 +25,7 @@ namespace XingyaoPerf
         const int WM_MOUSEACTIVATE = 0x21, MA_NOACTIVATE = 3;
 
         // Layout in pixels for a 60 px tall taskbar, scaled to the real height.
-        const float RowH = 26, RowGap = 3, Radius = 3, LabelW = 40, FreqW = 68, InnerGap = 3, PowerW = 76, TempW = 66, FanW = 92, ColGap = 8;
+        const float RowH = 26, RowGap = 3, Radius = 3, LabelW = 40, PctW = 60, FreqW = 68, InnerGap = 3, PowerW = 76, TempW = 66, FanW = 92, ColGap = 8;
 
         // Bars are full at these values. Frequency scales are for display only.
         const double CpuGhzMax = 5.0, GpuGhzMax = 2.5, PkgWMax = 60, GpuWMax = 40, TempMin = 30, TempMax = 100, FanMax = 7500;
@@ -69,13 +69,13 @@ namespace XingyaoPerf
 
         static string Key(Snapshot s)
         {
-            return Num(s.PGhz, "0.0") + Num(s.EGhz, "0.0") + Num(s.LGhz, "0.0") + "|" + Num(s.PkgW, "0.0") + "|" + Num(s.TempC, "0") + "|" + Num(s.GpuMhz, "0") + "|" + Num(s.GpuW, "0.0") + "|" + s.Fan0 + "|" + s.Fan1;
+            return Num(s.CpuPct, "0") + "|" + Num(s.GpuPct, "0") + "|" + Num(s.PGhz, "0.0") + Num(s.EGhz, "0.0") + Num(s.LGhz, "0.0") + "|" + Num(s.PkgW, "0.0") + "|" + Num(s.TempC, "0") + "|" + Num(s.GpuMhz, "0") + "|" + Num(s.GpuW, "0.0") + "|" + s.Fan0 + "|" + s.Fan1;
         }
 
         public static int WidthFor(int h)
         {
             float k = h / 60f;
-            return (int)Math.Ceiling(k * (LabelW + FreqW * 3 + InnerGap * 2 + ColGap + PowerW + ColGap + TempW + ColGap + FanW)) + 2;
+            return (int)Math.Ceiling(k * (LabelW + PctW + ColGap + FreqW * 3 + InnerGap * 2 + ColGap + PowerW + ColGap + TempW + ColGap + FanW)) + 2;
         }
 
         static bool LightTaskbar()
@@ -178,7 +178,7 @@ namespace XingyaoPerf
             float rowH = RowH * k, gap = RowGap * k, rad = Radius * k, inner = InnerGap * k, col = ColGap * k;
             float y1 = (h - rowH * 2 - gap) / 2, y2 = y1 + rowH + gap;
             float freqW = FreqW * k, freqAll = freqW * 3 + inner * 2;
-            float xFreq = LabelW * k, xPower = xFreq + freqAll + col, xTemp = xPower + PowerW * k + col, xFan = xTemp + TempW * k + col;
+            float xPct = LabelW * k, xFreq = xPct + (PctW + ColGap) * k, xPower = xFreq + freqAll + col, xTemp = xPower + PowerW * k + col, xFan = xTemp + TempW * k + col;
 
             var bmp = new Bitmap(w, h, PixelFormat.Format32bppArgb);
             using (var g = Graphics.FromImage(bmp))
@@ -191,8 +191,11 @@ namespace XingyaoPerf
                 g.SmoothingMode = SmoothingMode.AntiAlias;
                 g.TextRenderingHint = TextRenderingHint.AntiAliasGridFit;
 
-                g.DrawString("CPU", f, label, new RectangleF(0, y1, xFreq, rowH), left);
-                g.DrawString("GPU", f, label, new RectangleF(0, y2, xFreq, rowH), left);
+                g.DrawString("CPU", f, label, new RectangleF(0, y1, xPct, rowH), left);
+                g.DrawString("GPU", f, label, new RectangleF(0, y2, xPct, rowH), left);
+
+                Bar(g, f, center, new RectangleF(xPct, y1, PctW * k, rowH), rad, s.CpuPct / 100, Level(s.CpuPct, 70, 90), Num(s.CpuPct, "0") + "%");
+                Bar(g, f, center, new RectangleF(xPct, y2, PctW * k, rowH), rad, s.GpuPct / 100, Level(s.GpuPct, 70, 90), Num(s.GpuPct, "0") + "%");
 
                 Bar(g, f, center, new RectangleF(xFreq, y1, freqW, rowH), rad, s.PGhz / CpuGhzMax, Freq, "P " + Num(s.PGhz, "0.0"));
                 Bar(g, f, center, new RectangleF(xFreq + freqW + inner, y1, freqW, rowH), rad, s.EGhz / CpuGhzMax, Freq, "E " + Num(s.EGhz, "0.0"));

@@ -206,8 +206,8 @@ namespace XingyaoPerf
         // Live values, then a hot example, on dark and light taskbars, followed by the three mode icons.
         static void SavePreview(string file, Snapshot live)
         {
-            var hot = new Snapshot { PGhz = 4.2, EGhz = 3.8, LGhz = 2.1, PkgW = 52.3, GpuW = 22.4, TempC = 91, GpuMhz = 2100, Fan0 = 6900, Fan1 = 4800 };
-            var warm = new Snapshot { PGhz = 3.1, EGhz = 2.7, LGhz = 1.9, PkgW = 42.1, GpuW = 12.4, TempC = 83, GpuMhz = 1450, Fan0 = 5100, Fan1 = 3000 };
+            var hot = new Snapshot { CpuPct = 100, GpuPct = 96, PGhz = 4.2, EGhz = 3.8, LGhz = 2.1, PkgW = 52.3, GpuW = 22.4, TempC = 91, GpuMhz = 2100, Fan0 = 6900, Fan1 = 4800 };
+            var warm = new Snapshot { CpuPct = 76, GpuPct = 41, PGhz = 3.1, EGhz = 2.7, LGhz = 1.9, PkgW = 42.1, GpuW = 12.4, TempC = 83, GpuMhz = 1450, Fan0 = 5100, Fan1 = 3000 };
             const int H = 60;
             int w = Overlay.WidthFor(H);
             var rows = new[] { live, warm, hot };
@@ -255,9 +255,9 @@ namespace XingyaoPerf
                 {
                     long t0 = sw.ElapsedMilliseconds;
                     last = m.SampleOnce();
-                    sb.AppendLine(string.Format("sample {0} ({1} ms): P {2} E {3} L {4} GHz, pkg {5} W, {6} C, GPU {7} MHz {8} W, fans {9}/{10}",
+                    sb.AppendLine(string.Format("sample {0} ({1} ms): CPU {11}% GPU {12}%, P {2} E {3} L {4} GHz, pkg {5} W, {6} C, GPU {7} MHz {8} W, fans {9}/{10}",
                         i, sw.ElapsedMilliseconds - t0, Overlay.Num(last.PGhz, "0.00"), Overlay.Num(last.EGhz, "0.00"), Overlay.Num(last.LGhz, "0.00"), Overlay.Num(last.PkgW, "0.0"),
-                        Overlay.Num(last.TempC, "0"), Overlay.Num(last.GpuMhz, "0"), Overlay.Num(last.GpuW, "0.0"), last.Fan0, last.Fan1));
+                        Overlay.Num(last.TempC, "0"), Overlay.Num(last.GpuMhz, "0"), Overlay.Num(last.GpuW, "0.0"), last.Fan0, last.Fan1, Overlay.Num(last.CpuPct, "0"), Overlay.Num(last.GpuPct, "0")));
                     Thread.Sleep(1000);
                 }
                 me.Refresh();

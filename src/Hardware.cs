@@ -239,7 +239,7 @@ namespace XingyaoPerf
     // Core frequencies and RAPL power from Windows performance counters.
     internal sealed class CounterSet : IDisposable
     {
-        readonly IntPtr q, pkg, gpu;
+        readonly IntPtr q, pkg, gpu, cpuPct, gpuEngines;
         readonly List<IntPtr> p = new List<IntPtr>(), e = new List<IntPtr>(), l = new List<IntPtr>();
 
         public CounterSet()
@@ -247,6 +247,8 @@ namespace XingyaoPerf
             Check(Native.PdhOpenQuery(null, IntPtr.Zero, out q));
             Check(Native.PdhAddEnglishCounter(q, @"\Energy Meter(rapl_package0_pkg)\Power", IntPtr.Zero, out pkg));
             Check(Native.PdhAddEnglishCounter(q, @"\Energy Meter(rapl_package0_pp1)\Power", IntPtr.Zero, out gpu));
+            Check(Native.PdhAddEnglishCounter(q, @"\Processor Information(_Total)\% Processor Utility", IntPtr.Zero, out cpuPct));
+            Check(Native.PdhAddEnglishCounter(q, @"\GPU Engine(*)\Utilization Percentage", IntPtr.Zero, out gpuEngines));
             foreach (var c in ReadTopology())
             {
                 IntPtr h;
@@ -292,9 +294,46 @@ namespace XingyaoPerf
             return n == 0 ? double.NaN : s / n / 1000.0;
         }
 
+        // Same approach as Task Manager: add up each engine type across processes, then take the busiest type.
+        double GpuBusyPercent()
+        {
+            const int PDH_MORE_DATA = unchecked((int)0x800007D2);
+            uint size = 0, count;
+            int r = Native.PdhGetFormattedCounterArray(gpuEngines, Native.PDH_FMT_DOUBLE, ref size, out count, IntPtr.Zero);
+            if (r != PDH_MORE_DATA || size == 0) return double.NaN;
+            IntPtr mem = Marshal.AllocHGlobal((int)size);
+            try
+            {
+                r = Native.PdhGetFormattedCounterArray(gpuEngines, Native.PDH_FMT_DOUBLE, ref size, out count, mem);
+                if (r != 0) return double.NaN;
+                var byType = new Dictionary<string, double>();
+                int itemSize = IntPtr.Size + Marshal.SizeOf(typeof(Native.PDH_VALUE));
+                double top = 0;
+                for (int i = 0; i < count; i++)
+                {
+                    IntPtr item = new IntPtr(mem.ToInt64() + i * itemSize);
+                    string name = Marshal.PtrToStringUni(Marshal.ReadIntPtr(item));
+                    var v = (Native.PDH_VALUE)Marshal.PtrToStructure(new IntPtr(item.ToInt64() + IntPtr.Size), typeof(Native.PDH_VALUE));
+                    if (name == null || v.Status != 0 && v.Status != 1) continue;
+                    int at = name.IndexOf("engtype_", StringComparison.Ordinal);
+                    string type = at < 0 ? name : name.Substring(at);
+                    double sum;
+                    byType.TryGetValue(type, out sum);
+                    sum += v.Value;
+                    byType[type] = sum;
+                    if (sum > top) top = sum;
+                }
+                return Math.Min(100, top);
+            }
+            finally { Marshal.FreeHGlobal(mem); }
+        }
+
         public void Sample(Snapshot s)
         {
             Native.PdhCollectQueryData(q);
+            double c = One(cpuPct);
+            s.CpuPct = double.IsNaN(c) ? c : Math.Min(100, c);
+            s.GpuPct = GpuBusyPercent();
             s.PGhz = Avg(p); s.EGhz = Avg(e); s.LGhz = Avg(l);
             s.PkgW = One(pkg) / 1000.0; s.GpuW = One(gpu) / 1000.0;
         }
@@ -304,7 +343,7 @@ namespace XingyaoPerf
 
     internal sealed class Snapshot
     {
-        public double PGhz = double.NaN, EGhz = double.NaN, LGhz = double.NaN, PkgW = double.NaN, GpuW = double.NaN, TempC = double.NaN, GpuMhz = double.NaN;
+        public double PGhz = double.NaN, EGhz = double.NaN, LGhz = double.NaN, PkgW = double.NaN, GpuW = double.NaN, TempC = double.NaN, GpuMhz = double.NaN, CpuPct = double.NaN, GpuPct = double.NaN;
         public int Fan0 = -1, Fan1 = -1, Mode;
     }
 }
