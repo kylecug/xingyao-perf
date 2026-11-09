@@ -75,8 +75,9 @@ namespace XingyaoPerf
     // Samples sensors on a background thread so slow WMI or EC calls never block the UI.
     internal sealed class Monitor : IDisposable
     {
-        // One sample a second, plus the time the sample takes. Other checks count samples, so they are in seconds.
-        const int IntervalMs = 1000, ModeEveryTicks = 6, RestoreWindowSeconds = 60, SleepGapSeconds = 30;
+        // A 700 ms wait plus the 200-300 ms a sample takes gives about one sample a second.
+        // Other checks count samples, so their counts are roughly seconds.
+        const int IntervalMs = 700, ModeEveryTicks = 6, RestoreWindowSeconds = 60, SleepGapSeconds = 30;
 
         public readonly Firmware Firmware = new Firmware();
         readonly Settings settings;
