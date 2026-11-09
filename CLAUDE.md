@@ -4,7 +4,7 @@ Tiny tray app for one laptop: MECHREVO Xingyao 14, board `XINGYAO Series-P916F-P
 
 Protocol details and test results are in `docs/protocol.md`.
 
-Version: `src/Version.cs` and `src/app.manifest` (currently 0.9.7). Commit, push to `main` and tag every change without waiting to be asked (the user's standing request); bump both files on each commit and tag it `vX.Y.Z`.
+Version: `src/Version.cs` and `src/app.manifest` (currently 0.9.8). Commit, push to `main` and tag every change without waiting to be asked (the user's standing request); bump both files on each commit and tag it `vX.Y.Z`.
 
 ## Safety
 

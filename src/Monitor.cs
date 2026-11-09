@@ -31,6 +31,7 @@ namespace XingyaoPerf
         public int CpuMaxMhz; // old frequency cap; only read so it can be cleared once
         public int CpuState = 100; // maximum processor state in percent; reapplied in case the plan changes
         public bool FanQuiet; // quiet fan mode: fans stop while cool, the EC curve otherwise
+        public string QuietSavedPowerMode = ""; // Windows power mode before the quiet mode switched it
         public int GameOverlay = 1; // 0 off, 1 listed games only, 2 any fullscreen app (and listed games)
         public string Games = ""; // extra game process names without .exe, separated by |, beyond the ones Windows recognises
 
@@ -47,6 +48,7 @@ namespace XingyaoPerf
                     else if (kv[0] == "overlay") s.Overlay = kv[1] != "0";
                     else if (kv[0] == "avoidweather") s.AvoidWeather = kv[1] != "0";
                     else if (kv[0] == "fanquiet") s.FanQuiet = kv[1] == "1";
+                    else if (kv[0] == "quietpowermode") s.QuietSavedPowerMode = kv[1];
                     else if (kv[0] == "gameoverlay") { int.TryParse(kv[1], out s.GameOverlay); if (s.GameOverlay < 0 || s.GameOverlay > 2) s.GameOverlay = 1; }
                     else if (kv[0] == "games") s.Games = kv[1];
                     else if (kv[0] == "gpumax") int.TryParse(kv[1], out s.GpuMaxMhz);
@@ -66,7 +68,7 @@ namespace XingyaoPerf
             try
             {
                 Directory.CreateDirectory(Log.Dir);
-                File.WriteAllText(FilePath, "mode=" + Mode + "\noverlay=" + (Overlay ? "1" : "0") + "\navoidweather=" + (AvoidWeather ? "1" : "0") + "\nlayout=" + Layout + "\ngameoverlay=" + GameOverlay + "\ngames=" + Games + "\ngpumax=" + GpuMaxMhz + "\ncpumax=" + CpuMaxMhz + "\ncpustate=" + CpuState + "\nfanquiet=" + (FanQuiet ? "1" : "0") + "\n");
+                File.WriteAllText(FilePath, "mode=" + Mode + "\noverlay=" + (Overlay ? "1" : "0") + "\navoidweather=" + (AvoidWeather ? "1" : "0") + "\nlayout=" + Layout + "\ngameoverlay=" + GameOverlay + "\ngames=" + Games + "\ngpumax=" + GpuMaxMhz + "\ncpumax=" + CpuMaxMhz + "\ncpustate=" + CpuState + "\nfanquiet=" + (FanQuiet ? "1" : "0") + "\nquietpowermode=" + QuietSavedPowerMode + "\n");
             }
             catch (Exception e) { Log.Write("save settings: " + e.Message); }
         }
@@ -106,10 +108,13 @@ namespace XingyaoPerf
         // to the EC curve the moment it warms up. The package sensor jumps by 20 C from one second to the next
         // at idle, so stopping uses 30-second averages and going back a 5-second average, with a single-reading
         // limit and a 10-second power average as backstops.
-        const double QuietOffC = 50, QuietOffW = 13, QuietBackC = 55, QuietBackSpikeC = 75, QuietBackW = 20;
-        const int QuietWindow = 30, QuietBackWindow = 5, QuietBackPowerWindow = 10, StallSeconds = 5;
+        const double QuietOffC = 55, QuietOffW = 13, QuietBackC = 65, QuietBackSpikeC = 80, QuietBackW = 20;
+        // With the fans stopped at 5-7 W the package settles around 55-60 C, so stopping at 55 and coming back at 65
+        // keeps light use quiet. After coming back the fans run at least QuietMinOn samples (about 2 minutes).
+        const int QuietWindow = 30, QuietBackWindow = 5, QuietBackPowerWindow = 10, QuietMinOn = 120, StallSeconds = 5;
         volatile bool fanQuiet, fanStopped;
         int quietCool; // samples since the quiet logic last changed state
+        int quietHold = QuietWindow; // samples needed before the fans may stop: a window at start, longer after coming back
         readonly double[] quietTemps = new double[QuietWindow], quietPowers = new double[QuietWindow];
         int quietNext;
         DateTime lastSampleAt = DateTime.UtcNow;
@@ -174,6 +179,7 @@ namespace XingyaoPerf
             // This is here, not in InitSensors, because --selftest must not write anything.
             if (fans != null) try { fans.SetFanAuto(); } catch (Exception e) { Log.Write("fan auto at start: " + e.Message); }
             fanQuiet = fans != null && settings.FanQuiet; // the quiet mode is kept across restarts; it starts on the EC curve
+            ApplyQuietPowerMode();
             int tick = 0;
             var last = DateTime.UtcNow;
             bool checkCaps = true;
@@ -247,7 +253,13 @@ namespace XingyaoPerf
             var f = fans;
             if (f == null) throw new InvalidOperationException("EC 端口不可用");
             bool quiet = percent == FanQuietLevel;
-            if (settings.FanQuiet != quiet) { settings.FanQuiet = quiet; settings.Save(); }
+            if (settings.FanQuiet != quiet)
+            {
+                if (quiet) EnterQuietPowerMode(); else LeaveQuietPowerMode();
+                settings.FanQuiet = quiet;
+                settings.Save();
+            }
+            quietHold = QuietWindow;
             fanQuiet = false;
             quietCool = 0;
             if (percent <= 0)
@@ -320,7 +332,7 @@ namespace XingyaoPerf
                 if (why != null) QuietBack(why);
                 return;
             }
-            if (quietCool < QuietWindow) return; // a full window since start or since the fans last came back
+            if (quietCool < quietHold) return; // a full window since start, longer since the fans last came back
             double avgT = Recent(quietTemps, QuietWindow), avgW = Recent(quietPowers, QuietWindow);
             if (double.IsNaN(avgT) || double.IsNaN(avgW) || avgT > QuietOffC || avgW > QuietOffW) return;
             try { f.SetFanOff(); fanStopped = true; quietCool = 0; Log.Write("quiet: fans stopped, 30 s average " + avgT.ToString("0") + " C, " + avgW.ToString("0.0") + " W"); }
@@ -332,8 +344,48 @@ namespace XingyaoPerf
         {
             var f = fans;
             try { if (f != null) f.SetFanAuto(); } catch (Exception e) { Log.Write("quiet: back to EC failed: " + e.Message); return; }
-            fanStopped = false; quietCool = 0;
+            fanStopped = false; quietCool = 0; quietHold = QuietMinOn;
             Log.Write("quiet: fans back to EC (" + why + ")");
+        }
+
+        // The quiet mode also puts Windows on "Best power efficiency", and puts the previous mode back on leaving.
+        void EnterQuietPowerMode()
+        {
+            try
+            {
+                Guid now = PowerMode.Get();
+                if (now != PowerMode.BestEfficiency) settings.QuietSavedPowerMode = now.ToString();
+                PowerMode.Set(PowerMode.BestEfficiency);
+                Log.Write("quiet: power mode set to best efficiency (was " + now + ")");
+            }
+            catch (Exception e) { Log.Write("quiet: power mode: " + e.Message); }
+        }
+
+        void LeaveQuietPowerMode()
+        {
+            if (settings.QuietSavedPowerMode.Length == 0) return;
+            try
+            {
+                PowerMode.Set(new Guid(settings.QuietSavedPowerMode));
+                Log.Write("quiet: power mode restored to " + settings.QuietSavedPowerMode);
+            }
+            catch (Exception e) { Log.Write("quiet: power mode restore: " + e.Message); }
+            settings.QuietSavedPowerMode = "";
+        }
+
+        // Windows keeps the power mode per power source, so it is applied again at start and when AC changes.
+        public void ApplyQuietPowerMode()
+        {
+            if (!settings.FanQuiet) return;
+            try
+            {
+                Guid now = PowerMode.Get();
+                if (now == PowerMode.BestEfficiency) return;
+                if (settings.QuietSavedPowerMode.Length == 0) { settings.QuietSavedPowerMode = now.ToString(); settings.Save(); }
+                PowerMode.Set(PowerMode.BestEfficiency);
+                Log.Write("quiet: power mode reapplied (was " + now + ")");
+            }
+            catch (Exception e) { Log.Write("quiet: power mode: " + e.Message); }
         }
 
         // Called on the UI timer. If sampling stalls while the fans are stopped, give them back to the EC from here.

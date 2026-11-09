@@ -128,7 +128,7 @@ namespace XingyaoPerf
                 int level = FanLevels[i];
                 fanMenu.DropDownItems.Add(new ToolStripMenuItem(level == 0 ? "自动（EC 曲线）" : level == 100 ? "全速 100%" : level + "%", null, (s, e) => PickFan(level)) { Tag = level });
                 if (level == 0)
-                    fanMenu.DropDownItems.Add(new ToolStripMenuItem("静音：低温时停转（50 °C 以下）", null, (s, e) => PickFan(Monitor.FanQuietLevel)) { Tag = Monitor.FanQuietLevel });
+                    fanMenu.DropDownItems.Add(new ToolStripMenuItem("静音：低温时停转，并用最佳能效", null, (s, e) => PickFan(Monitor.FanQuietLevel)) { Tag = Monitor.FanQuietLevel });
             }
             fanMenu.Enabled = Platform.FanReadAllowed;
             fanMenu.DropDownOpening += (s, e) => Check(fanMenu, monitor.FanPercent);
@@ -136,6 +136,7 @@ namespace XingyaoPerf
             monitor.FanReleased += why => ui.Post(_ => { Check(fanMenu, 0); tray.ShowBalloonTip(5000, "风扇已恢复自动", "原因：" + why, ToolTipIcon.Warning); }, null);
             Microsoft.Win32.SystemEvents.PowerModeChanged += (s, e) => { if (e.Mode == Microsoft.Win32.PowerModes.Suspend) monitor.OnSuspend(); };
             Microsoft.Win32.SystemEvents.SessionEnding += (s, e) => monitor.OnSuspend(); // shutdown or sign-out
+            Microsoft.Win32.SystemEvents.PowerModeChanged += (s, e) => { if (e.Mode == Microsoft.Win32.PowerModes.StatusChange) monitor.ApplyQuietPowerMode(); };
             menu.Items.Add(fanMenu);
             menu.Items.Add(cpuMenu);
             menu.Items.Add(gpuMenu);

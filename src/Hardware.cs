@@ -390,6 +390,31 @@ namespace XingyaoPerf
         public static void ClearFrequencyCap() { Write(Freq, 0); }
     }
 
+    // Windows 11 power mode (Settings > Power > Power mode), the "overlay" on top of the power plan.
+    // Here Intel's power management follows it: "Best power efficiency" kept turbo on one core (P cores
+    // about 3.8 GHz instead of 4.6) and cut package power by about 25%, while single settings such as the
+    // frequency cap, core parking and EPP are rewritten. The mode is kept per power source (AC and battery).
+    internal static class PowerMode
+    {
+        public static readonly Guid BestEfficiency = new Guid("961cc777-2547-4f9d-8174-7d86181b8a7a");
+        [DllImport("powrprof.dll")] static extern uint PowerGetActualOverlayScheme(out Guid g);
+        [DllImport("powrprof.dll")] static extern uint PowerSetActiveOverlayScheme(Guid g);
+
+        public static Guid Get()
+        {
+            Guid g;
+            uint r = PowerGetActualOverlayScheme(out g);
+            if (r != 0) throw new InvalidOperationException("PowerGetActualOverlayScheme " + r);
+            return g;
+        }
+
+        public static void Set(Guid g)
+        {
+            uint r = PowerSetActiveOverlayScheme(g);
+            if (r != 0) throw new InvalidOperationException("PowerSetActiveOverlayScheme " + r);
+        }
+    }
+
     // Package temperature from Intel DTT. Domain 0 is the processor package. Needs administrator rights.
     internal sealed class PackageTemp
     {
