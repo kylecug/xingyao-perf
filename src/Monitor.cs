@@ -105,7 +105,7 @@ namespace XingyaoPerf
         // to the EC curve the moment it warms up. The package sensor jumps by 20 C from one second to the next
         // at idle, so stopping uses 30-second averages and going back a 5-second average, with a single-reading
         // limit and a power limit as backstops.
-        const double QuietOffC = 50, QuietOffW = 10, QuietBackC = 55, QuietBackSpikeC = 75, QuietBackW = 15;
+        const double QuietOffC = 50, QuietOffW = 13, QuietBackC = 55, QuietBackSpikeC = 75, QuietBackW = 15;
         const int QuietWindow = 30, QuietBackWindow = 5, StallSeconds = 5;
         volatile bool fanQuiet, fanStopped;
         int quietCool, quietPower; // quietCool: samples since the quiet logic last changed state
