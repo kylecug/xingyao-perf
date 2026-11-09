@@ -51,8 +51,6 @@ namespace XingyaoPerf
     internal sealed class TrayApp : ApplicationContext
     {
         static readonly string[] Names = { "未知", "办公模式", "平衡模式", "性能模式" };
-        static readonly string[] Glyphs = { "?", "办", "平", "性" };
-        static readonly Color[] Colors = { Color.Gray, Color.FromArgb(46, 125, 50), Color.FromArgb(21, 101, 192), Color.FromArgb(198, 40, 40) };
 
         readonly Settings settings = Settings.Load();
         readonly Monitor monitor;
@@ -73,7 +71,7 @@ namespace XingyaoPerf
             for (int m = 1; m <= 3; m++)
             {
                 int mode = m;
-                modeItems[m] = new ToolStripMenuItem(Names[m], null, (s, e) => Pick(mode)) { Enabled = Platform.ModeWriteAllowed };
+                modeItems[m] = new ToolStripMenuItem(Names[m], ModeIcon.Draw(m, menu.ImageScalingSize.Height), (s, e) => Pick(mode)) { Enabled = Platform.ModeWriteAllowed };
                 menu.Items.Add(modeItems[m]);
             }
             menu.Items.Add(new ToolStripSeparator());
@@ -104,7 +102,7 @@ namespace XingyaoPerf
             if (!settings.Overlay) { if (overlay.Visible) overlay.Hide(); return; }
             var s = monitor.Latest;
             if (s != shown) { shown = s; overlay.SetValues(s); }
-            overlay.Track();
+            overlay.Track_();
         }
 
         void Pick(int mode)
@@ -123,15 +121,8 @@ namespace XingyaoPerf
         void ShowMode(int mode)
         {
             for (int m = 1; m <= 3; m++) modeItems[m].Checked = m == mode;
-            using (var bmp = new Bitmap(32, 32))
-            using (var g = Graphics.FromImage(bmp))
-            using (var bg = new SolidBrush(Colors[mode]))
-            using (var f = new Font("Microsoft YaHei", 21f, FontStyle.Bold, GraphicsUnit.Pixel))
-            using (var sf = new StringFormat { Alignment = StringAlignment.Center, LineAlignment = StringAlignment.Center })
+            using (var bmp = ModeIcon.Draw(mode, SystemInformation.SmallIconSize.Height))
             {
-                g.TextRenderingHint = TextRenderingHint.AntiAliasGridFit;
-                g.FillRectangle(bg, 0, 0, 32, 32);
-                g.DrawString(Glyphs[mode], f, Brushes.White, new RectangleF(0, 1, 32, 32), sf);
                 IntPtr h = bmp.GetHicon();
                 using (var icon = Icon.FromHandle(h)) tray.Icon = icon;
                 if (iconHandle != IntPtr.Zero) Native.DestroyIcon(iconHandle);
@@ -212,6 +203,35 @@ namespace XingyaoPerf
             return 0;
         }
 
+        // Live values, then a hot example, on dark and light taskbars, followed by the three mode icons.
+        static void SavePreview(string file, Snapshot live)
+        {
+            var hot = new Snapshot { PGhz = 4.2, EGhz = 3.8, LGhz = 2.1, PkgW = 52.3, GpuW = 22.4, TempC = 91, GpuMhz = 2100, Fan0 = 6900, Fan1 = 4800 };
+            var warm = new Snapshot { PGhz = 3.1, EGhz = 2.7, LGhz = 1.9, PkgW = 42.1, GpuW = 12.4, TempC = 83, GpuMhz = 1450, Fan0 = 5100, Fan1 = 3000 };
+            const int H = 60;
+            int w = Overlay.WidthFor(H);
+            var rows = new[] { live, warm, hot };
+            using (var sheet = new Bitmap(w + 170, (H + 6) * rows.Length * 2))
+            using (var g = Graphics.FromImage(sheet))
+            using (var o = new Overlay())
+            using (var f = Overlay.MakeFont(H))
+            {
+                for (int t = 0; t < 2; t++)
+                {
+                    bool light = t == 1;
+                    g.FillRectangle(light ? Brushes.WhiteSmoke : new SolidBrush(Color.FromArgb(32, 28, 28)), 0, t * (H + 6) * rows.Length, sheet.Width, (H + 6) * rows.Length);
+                    for (int i = 0; i < rows.Length; i++)
+                    {
+                        o.SetValues(rows[i]);
+                        using (var bmp = o.Render(w, H, f, light)) g.DrawImage(bmp, 6, (t * rows.Length + i) * (H + 6) + 3, w, H);
+                        for (int m = 1; m <= 3; m++)
+                            using (var ic = ModeIcon.Draw(m, 40)) g.DrawImage(ic, w + 14 + (m - 1) * 50, (t * rows.Length + i) * (H + 6) + 13, 40, 40);
+                    }
+                }
+                sheet.Save(file, System.Drawing.Imaging.ImageFormat.Png);
+            }
+        }
+
         // Reads everything without the UI, reports cost per sample, and renders a preview. Sends no writes.
         static int SelfTest(string path)
         {
@@ -245,12 +265,7 @@ namespace XingyaoPerf
                 sb.AppendLine("Private memory: " + (me.PrivateMemorySize64 / 1024 / 1024) + " MB, working set " + (me.WorkingSet64 / 1024 / 1024) + " MB");
                 try
                 {
-                    using (var o = new Overlay())
-                    using (var f = new Font("Segoe UI", 18f, FontStyle.Regular, GraphicsUnit.Pixel))
-                    {
-                        o.SetValues(last);
-                        using (var bmp = o.Render(420, 60, f, false)) bmp.Save(path + ".png", System.Drawing.Imaging.ImageFormat.Png);
-                    }
+                    SavePreview(path + ".png", last);
                 }
                 catch (Exception e) { sb.AppendLine("preview: " + e.Message); }
             }

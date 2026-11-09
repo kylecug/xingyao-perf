@@ -1,5 +1,6 @@
 using System;
 using System.Drawing;
+using System.Drawing.Drawing2D;
 using System.Drawing.Imaging;
 using System.Drawing.Text;
 using System.Globalization;
@@ -11,14 +12,28 @@ namespace XingyaoPerf
 {
     // A small per-pixel-alpha window that sits on the taskbar, just left of the tray.
     // Windows 11 has no taskbar widget API, so this floats above the taskbar rather than inside it.
+    //
+    //   CPU | P 4.2 | E 3.8 | L 2.1 | 39.9 W |       | 6506 rpm
+    //   GPU |     2.10 GHz          | 22.4 W | 69 °C | 6282 rpm
+    //
+    // Frequency and power line up in columns. CPU and GPU share one package, so the
+    // temperature spans both rows. The two fans are stacked but not tied to a row,
+    // because which fan cools which part is not known.
     internal sealed class Overlay : Form
     {
         const int WS_EX_LAYERED = 0x80000, WS_EX_TOOLWINDOW = 0x80, WS_EX_NOACTIVATE = 0x8000000, WS_EX_TOPMOST = 0x8;
         const int WM_MOUSEACTIVATE = 0x21, MA_NOACTIVATE = 3;
-        const string Template1 = "P 8.8  E 8.8  L 8.8 GHz   88.8 W  88 °C";
-        const string Template2 = "GPU 8888 MHz  88.8 W   8888/8888 RPM";
 
-        string line1 = "", line2 = "";
+        // Layout in pixels for a 60 px tall taskbar, scaled to the real height.
+        const float RowH = 26, RowGap = 3, Radius = 3, LabelW = 40, FreqW = 68, InnerGap = 3, PowerW = 76, TempW = 66, FanW = 92, ColGap = 8;
+
+        // Bars are full at these values. Frequency scales are for display only.
+        const double CpuGhzMax = 5.0, GpuGhzMax = 2.5, PkgWMax = 60, GpuWMax = 40, TempMin = 30, TempMax = 100, FanMax = 7500;
+
+        static readonly Color Normal = Color.FromArgb(46, 125, 50), Warn = Color.FromArgb(190, 120, 0), Hot = Color.FromArgb(198, 40, 40), Freq = Color.FromArgb(30, 100, 180);
+        static readonly Color TrackDark = Color.FromArgb(48, 255, 255, 255), TrackLight = Color.FromArgb(170, 30, 30, 30);
+
+        Snapshot values = new Snapshot();
         int lastH, lastX, lastY, width;
         bool lastLight;
         Font font;
@@ -50,11 +65,17 @@ namespace XingyaoPerf
 
         public static string Num(double v, string fmt) { return double.IsNaN(v) ? "--" : v.ToString(fmt, CultureInfo.InvariantCulture); }
 
-        public void SetValues(Snapshot s)
+        public void SetValues(Snapshot s) { values = s; Redraw(); }
+
+        static string Key(Snapshot s)
         {
-            line1 = "P " + Num(s.PGhz, "0.0") + "  E " + Num(s.EGhz, "0.0") + "  L " + Num(s.LGhz, "0.0") + " GHz   " + Num(s.PkgW, "0.0") + " W  " + Num(s.TempC, "0") + " °C";
-            line2 = "GPU " + Num(s.GpuMhz, "0") + " MHz  " + Num(s.GpuW, "0.0") + " W   " + (s.Fan0 < 0 ? "--" : s.Fan0.ToString()) + "/" + (s.Fan1 < 0 ? "--" : s.Fan1.ToString()) + " RPM";
-            Redraw();
+            return Num(s.PGhz, "0.0") + Num(s.EGhz, "0.0") + Num(s.LGhz, "0.0") + "|" + Num(s.PkgW, "0.0") + "|" + Num(s.TempC, "0") + "|" + Num(s.GpuMhz, "0") + "|" + Num(s.GpuW, "0.0") + "|" + s.Fan0 + "|" + s.Fan1;
+        }
+
+        public static int WidthFor(int h)
+        {
+            float k = h / 60f;
+            return (int)Math.Ceiling(k * (LabelW + FreqW * 3 + InnerGap * 2 + ColGap + PowerW + ColGap + TempW + ColGap + FanW)) + 2;
         }
 
         static bool LightTaskbar()
@@ -67,7 +88,7 @@ namespace XingyaoPerf
         }
 
         // Called on a timer: follows the taskbar, stays above it, and hides for fullscreen apps.
-        public void Track()
+        public void Track_()
         {
             IntPtr bar = Native.FindWindow("Shell_TrayWnd", null);
             Native.RECT r, tray;
@@ -83,10 +104,8 @@ namespace XingyaoPerf
             if (h != lastH || light != lastLight)
             {
                 if (font != null) font.Dispose();
-                font = new Font("Segoe UI", Math.Max(9f, h * 0.30f), FontStyle.Regular, GraphicsUnit.Pixel);
-                using (var bmp = new Bitmap(1, 1))
-                using (var g = Graphics.FromImage(bmp))
-                    width = (int)Math.Ceiling(Math.Max(g.MeasureString(Template1, font).Width, g.MeasureString(Template2, font).Width)) + 8;
+                font = MakeFont(h);
+                width = WidthFor(h);
                 lastH = h; lastLight = light; drawn = null;
             }
             int x = right - width - 8, y = r.Top;
@@ -95,6 +114,8 @@ namespace XingyaoPerf
             Redraw();
             Native.SetWindowPos(Handle, Native.HWND_TOPMOST, 0, 0, 0, 0, Native.SWP_NOMOVE | Native.SWP_NOSIZE | Native.SWP_NOACTIVATE);
         }
+
+        public static Font MakeFont(int h) { return new Font("Segoe UI", Math.Max(9f, h * 0.27f), FontStyle.Regular, GraphicsUnit.Pixel); }
 
         static bool TaskbarOnScreen(Native.RECT r)
         {
@@ -115,19 +136,76 @@ namespace XingyaoPerf
             return r.Left <= b.Left && r.Top <= b.Top && r.Right >= b.Right && r.Bottom >= b.Bottom;
         }
 
+        static Color Level(double v, double warn, double hot) { return v >= hot ? Hot : v >= warn ? Warn : Normal; }
+
+        static GraphicsPath Rounded(RectangleF r, float rad)
+        {
+            var p = new GraphicsPath();
+            float d = rad * 2;
+            p.AddArc(r.Left, r.Top, d, d, 180, 90);
+            p.AddArc(r.Right - d, r.Top, d, d, 270, 90);
+            p.AddArc(r.Right - d, r.Bottom - d, d, d, 0, 90);
+            p.AddArc(r.Left, r.Bottom - d, d, d, 90, 90);
+            p.CloseFigure();
+            return p;
+        }
+
+        [ThreadStatic] static Color currentTrack;
+
+        static void Bar(Graphics g, Font f, StringFormat center, RectangleF r, float rad, double fraction, Color color, string text)
+        {
+            using (var path = Rounded(r, rad))
+            using (var track = new SolidBrush(currentTrack))
+            {
+                g.FillPath(track, path);
+                if (!double.IsNaN(fraction) && fraction > 0)
+                {
+                    float w = r.Width * (float)Math.Min(1.0, fraction);
+                    var state = g.Save();
+                    g.SetClip(path);
+                    using (var fill = new SolidBrush(color)) g.FillRectangle(fill, r.Left, r.Top, w, r.Height);
+                    g.Restore(state);
+                }
+                g.DrawString(text, f, Brushes.White, r, center);
+            }
+        }
+
         public Bitmap Render(int w, int h, Font f, bool light)
         {
+            var s = values;
+            currentTrack = light ? TrackLight : TrackDark;
+            float k = h / 60f;
+            float rowH = RowH * k, gap = RowGap * k, rad = Radius * k, inner = InnerGap * k, col = ColGap * k;
+            float y1 = (h - rowH * 2 - gap) / 2, y2 = y1 + rowH + gap;
+            float freqW = FreqW * k, freqAll = freqW * 3 + inner * 2;
+            float xFreq = LabelW * k, xPower = xFreq + freqAll + col, xTemp = xPower + PowerW * k + col, xFan = xTemp + TempW * k + col;
+
             var bmp = new Bitmap(w, h, PixelFormat.Format32bppArgb);
             using (var g = Graphics.FromImage(bmp))
-            using (var brush = new SolidBrush(light ? Color.FromArgb(20, 20, 20) : Color.FromArgb(245, 245, 245)))
+            using (var label = new SolidBrush(light ? Color.FromArgb(40, 40, 40) : Color.FromArgb(225, 225, 225)))
+            using (var center = new StringFormat { Alignment = StringAlignment.Center, LineAlignment = StringAlignment.Center, FormatFlags = StringFormatFlags.NoWrap })
+            using (var left = new StringFormat { Alignment = StringAlignment.Near, LineAlignment = StringAlignment.Center, FormatFlags = StringFormatFlags.NoWrap })
             {
                 // Alpha 1 is invisible but keeps the whole area clickable for the right-click menu.
                 g.Clear(Color.FromArgb(1, 0, 0, 0));
+                g.SmoothingMode = SmoothingMode.AntiAlias;
                 g.TextRenderingHint = TextRenderingHint.AntiAliasGridFit;
-                float rowH = f.GetHeight(g);
-                float top = Math.Max(0, (h - rowH * 2) / 2);
-                g.DrawString(line1, f, brush, 2, top);
-                g.DrawString(line2, f, brush, 2, top + rowH);
+
+                g.DrawString("CPU", f, label, new RectangleF(0, y1, xFreq, rowH), left);
+                g.DrawString("GPU", f, label, new RectangleF(0, y2, xFreq, rowH), left);
+
+                Bar(g, f, center, new RectangleF(xFreq, y1, freqW, rowH), rad, s.PGhz / CpuGhzMax, Freq, "P " + Num(s.PGhz, "0.0"));
+                Bar(g, f, center, new RectangleF(xFreq + freqW + inner, y1, freqW, rowH), rad, s.EGhz / CpuGhzMax, Freq, "E " + Num(s.EGhz, "0.0"));
+                Bar(g, f, center, new RectangleF(xFreq + (freqW + inner) * 2, y1, freqW, rowH), rad, s.LGhz / CpuGhzMax, Freq, "L " + Num(s.LGhz, "0.0"));
+                Bar(g, f, center, new RectangleF(xFreq, y2, freqAll, rowH), rad, s.GpuMhz / 1000 / GpuGhzMax, Freq, Num(s.GpuMhz / 1000, "0.00") + " GHz");
+
+                Bar(g, f, center, new RectangleF(xPower, y1, PowerW * k, rowH), rad, s.PkgW / PkgWMax, Level(s.PkgW, 40, 50), Num(s.PkgW, "0.0") + " W");
+                Bar(g, f, center, new RectangleF(xPower, y2, PowerW * k, rowH), rad, s.GpuW / GpuWMax, Level(s.GpuW, 30, 38), Num(s.GpuW, "0.0") + " W");
+
+                Bar(g, f, center, new RectangleF(xTemp, y1, TempW * k, rowH * 2 + gap), rad, (s.TempC - TempMin) / (TempMax - TempMin), Level(s.TempC, 80, 90), Num(s.TempC, "0") + " °C");
+
+                Bar(g, f, center, new RectangleF(xFan, y1, FanW * k, rowH), rad, s.Fan0 < 0 ? double.NaN : s.Fan0 / FanMax, Level(s.Fan0, 5000, 6500), (s.Fan0 < 0 ? "--" : s.Fan0.ToString()) + " rpm");
+                Bar(g, f, center, new RectangleF(xFan, y2, FanW * k, rowH), rad, s.Fan1 < 0 ? double.NaN : s.Fan1 / FanMax, Level(s.Fan1, 5000, 6500), (s.Fan1 < 0 ? "--" : s.Fan1.ToString()) + " rpm");
             }
             return bmp;
         }
@@ -135,7 +213,7 @@ namespace XingyaoPerf
         void Redraw()
         {
             if (font == null || !IsHandleCreated || !Visible) return;
-            string key = line1 + "|" + line2;
+            string key = Key(values);
             if (key == drawn) return;
             drawn = key;
             using (var bmp = Render(width, lastH, font, lastLight))
@@ -164,6 +242,33 @@ namespace XingyaoPerf
         {
             if (disposing && font != null) font.Dispose();
             base.Dispose(disposing);
+        }
+    }
+
+    // Three rising bars, like a signal meter. The number lit and the color show the mode.
+    internal static class ModeIcon
+    {
+        static readonly Color[] Colors = { Color.Gray, Color.FromArgb(76, 175, 80), Color.FromArgb(66, 165, 245), Color.FromArgb(239, 83, 80) };
+
+        public static Bitmap Draw(int mode, int size)
+        {
+            var bmp = new Bitmap(size, size, PixelFormat.Format32bppArgb);
+            using (var g = Graphics.FromImage(bmp))
+            using (var on = new SolidBrush(Colors[mode]))
+            using (var off = new SolidBrush(Color.FromArgb(110, 150, 150, 150)))
+            {
+                g.Clear(Color.Transparent);
+                int barW = Math.Max(2, (int)Math.Round(size * 0.24)), barGap = Math.Max(1, (int)Math.Round(size * 0.11));
+                int x = (size - barW * 3 - barGap * 2) / 2;
+                double[] heights = { 0.42, 0.70, 1.0 };
+                int bottom = size - Math.Max(1, size / 16), maxH = bottom - Math.Max(1, size / 16);
+                for (int i = 0; i < 3; i++)
+                {
+                    int bh = (int)Math.Round(maxH * heights[i]);
+                    g.FillRectangle(i < mode ? on : off, x + i * (barW + barGap), bottom - bh, barW, bh);
+                }
+            }
+            return bmp;
         }
     }
 }
