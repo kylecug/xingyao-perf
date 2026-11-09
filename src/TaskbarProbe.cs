@@ -68,6 +68,9 @@ namespace XingyaoPerf
                 if (id == "WidgetsButton") { r.WidgetsLeft = (int)rect.Left; r.WidgetsRight = (int)Math.Ceiling(rect.Right); }
                 else if (!cls.StartsWith("SystemTray.")) r.TasksRight = Math.Max(r.TasksRight, (int)Math.Ceiling(rect.Right));
             }
+            // Right after Explorer starts or the display changes, the tree can briefly be empty.
+            // That must not read as "no weather button", so it counts as a failed read.
+            if (r.TasksRight < 0) throw new InvalidOperationException("no taskbar buttons found");
             return r;
         }
 

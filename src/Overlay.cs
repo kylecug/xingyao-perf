@@ -30,7 +30,7 @@ namespace XingyaoPerf
     internal sealed class Overlay : NativeWindow, IDisposable
     {
         const int WS_EX_LAYERED = 0x80000, WS_EX_TOOLWINDOW = 0x80, WS_EX_NOACTIVATE = 0x8000000, WS_EX_TOPMOST = 0x8;
-        const int WM_MOUSEACTIVATE = 0x21, MA_NOACTIVATE = 3, WM_RBUTTONUP = 0x205;
+        const int WM_MOUSEACTIVATE = 0x21, MA_NOACTIVATE = 3, WM_LBUTTONUP = 0x202, WM_RBUTTONUP = 0x205;
 
         // Layout in pixels for a 60 px tall taskbar, scaled to the real height.
         const float RowH = 26, RowGap = 3, Radius = 3, LabelW = 30, PctW = 40, FreqW = 45, InnerGap = 2, PowerW = 51, TempW = 44, FanW = 63, ColGap = 5;
@@ -61,13 +61,13 @@ namespace XingyaoPerf
         IntPtr embeddedIn;
         bool embedFailed, shown;
 
-        public event Action RightClick;
+        public event Action Click; // left or right button
         public bool Visible { get { return shown; } }
 
         protected override void WndProc(ref Message m)
         {
             if (m.Msg == WM_MOUSEACTIVATE) { m.Result = (IntPtr)MA_NOACTIVATE; return; }
-            if (m.Msg == WM_RBUTTONUP) { var h = RightClick; if (h != null) h(); return; }
+            if (m.Msg == WM_RBUTTONUP || m.Msg == WM_LBUTTONUP) { var h = Click; if (h != null) h(); return; }
             base.WndProc(ref m);
         }
 

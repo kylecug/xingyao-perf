@@ -159,6 +159,72 @@ namespace XingyaoPerf
             }
             finally { if (got) mutex.ReleaseMutex(); }
         }
+        // Charge thresholds. Verified on this machine (BIOS 1.01): read F1 12/13/14; write F1 10, F3 100, F2 80, F1 11.
+        // Protocol and write order from clmslgs/open-revo ptl_pmc.rs. See docs/protocol.md.
+        byte Send(byte cmd, byte arg, bool reply)
+        {
+            bool ok = (cmd == 0xf1 && arg >= 0x10 && arg <= 0x14) || ((cmd == 0xf2 || cmd == 0xf3) && arg <= 100);
+            if (!ok) throw new ArgumentException("command not allowed");
+            Wait(2, 0);
+            if ((In(0x6c) & 1) != 0) throw new IOException("EC output pending, nothing sent");
+            Out(0x6c, cmd); Wait(2, 0); Out(0x68, arg);
+            if (reply) { Wait(1, 1); return In(0x68); }
+            // These commands do not reply. Read any stray byte so it is not taken as the next answer.
+            Wait(2, 0); Thread.Sleep(30);
+            if ((In(0x6c) & 1) != 0) Log.Write("charge: unexpected reply 0x" + In(0x68).ToString("X2") + " to " + cmd.ToString("X2") + " " + arg.ToString("X2"));
+            return 0;
+        }
+
+        T Locked<T>(Func<T> f)
+        {
+            bool got = false;
+            try
+            {
+                try { got = mutex.WaitOne(3000); } catch (AbandonedMutexException) { got = true; }
+                if (!got) throw new IOException("EC channel busy");
+                return f();
+            }
+            finally { if (got) mutex.ReleaseMutex(); }
+        }
+
+        // Returns enabled (0 or 1), lower (stop charging at) and upper (discharge above) percentages.
+        public int[] ReadCharge()
+        {
+            var v = Locked(() => new int[] { Send(0xf1, 0x12, true), Send(0xf1, 0x13, true), Send(0xf1, 0x14, true) });
+            if (v[0] > 1 || v[1] > 100 || v[2] > 100) throw new IOException("unexpected charge reply " + string.Join(",", v));
+            return v;
+        }
+
+        // Writes, then reads back. On any mismatch it writes the previous values back and throws.
+        public void WriteCharge(int enabled, int lower, int upper)
+        {
+            var before = ReadCharge();
+            if (before[0] == enabled && before[1] == lower && before[2] == upper) return;
+            try { WriteChargeOnce(enabled, lower, upper); }
+            catch (Exception e)
+            {
+                try { WriteChargeOnce(before[0], before[1], before[2]); Log.Write("charge: rolled back after " + e.Message); }
+                catch (Exception r) { Log.Write("charge: rollback failed: " + r.Message); throw new IOException(e.Message + "; rollback failed: " + r.Message); }
+                throw;
+            }
+        }
+
+        void WriteChargeOnce(int enabled, int lower, int upper)
+        {
+            Locked(() =>
+            {
+                Send(0xf1, 0x10, false);
+                int e = Send(0xf3, (byte)upper, true); if (e != upper) throw new IOException("upper echo " + e + ", wanted " + upper);
+                e = Send(0xf2, (byte)lower, true); if (e != lower) throw new IOException("lower echo " + e + ", wanted " + lower);
+                if (enabled == 1) Send(0xf1, 0x11, false);
+                return 0;
+            });
+            Thread.Sleep(300);
+            var v = ReadCharge();
+            if (v[0] != enabled || v[1] != lower || v[2] != upper)
+                throw new IOException("charge read-back " + string.Join(",", v) + ", wanted " + enabled + "," + lower + "," + upper);
+        }
+
         public void Dispose() { h.Dispose(); mutex.Dispose(); }
     }
 

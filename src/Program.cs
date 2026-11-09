@@ -60,6 +60,9 @@ namespace XingyaoPerf
         readonly ToolStripMenuItem[] modeItems = new ToolStripMenuItem[4];
         readonly ToolStripMenuItem overlayItem, weatherItem, startupItem;
         readonly ToolStripMenuItem[] layoutItems = new ToolStripMenuItem[3];
+        static readonly int[] ChargeLimits = { 60, 80, 0 };
+        readonly ToolStripMenuItem[] chargeItems = new ToolStripMenuItem[3];
+        IntPtr trayTaskbar; // the taskbar window the tray icon was last added to
         TaskbarProbe probe; // Runs only for the auto layout. Manual layouts never load UI Automation.
         readonly System.Windows.Forms.Timer timer = new System.Windows.Forms.Timer { Interval = 500 };
         readonly SynchronizationContext ui;
@@ -90,17 +93,35 @@ namespace XingyaoPerf
                 layoutItems[i] = new ToolStripMenuItem(layoutNames[i], null, (s, e) => PickLayout(layout)) { Checked = settings.Layout == i };
                 layoutMenu.DropDownItems.Add(layoutItems[i]);
             }
+            var chargeMenu = new ToolStripMenuItem("充电上限") { Enabled = Platform.FanReadAllowed };
+            string[] chargeNames = { "60%", "80%", "关闭（充到 100%）" };
+            for (int i = 0; i < 3; i++)
+            {
+                int limit = ChargeLimits[i];
+                chargeItems[i] = new ToolStripMenuItem(chargeNames[i], null, (s, e) => PickCharge(limit));
+                chargeMenu.DropDownItems.Add(chargeItems[i]);
+            }
             startupItem = new ToolStripMenuItem("开机自动启动", null, (s, e) => ToggleStartup());
+            menu.Items.Add(chargeMenu);
+            menu.Items.Add(new ToolStripSeparator());
             menu.Items.Add(overlayItem);
             menu.Items.Add(layoutMenu);
             menu.Items.Add(weatherItem);
             menu.Items.Add(startupItem);
             menu.Items.Add(new ToolStripSeparator());
             menu.Items.Add("退出", null, (s, e) => Quit());
-            menu.Opening += (s, e) => startupItem.Checked = Startup.Enabled;
+            menu.Opening += (s, e) => { startupItem.Checked = Startup.Enabled; RefreshCharge(); };
 
             tray.ContextMenuStrip = menu;
-            overlay.RightClick += () => menu.Show(Cursor.Position);
+            // Left click opens the same menu as right click. NotifyIcon only has a private method that
+            // positions the menu and takes the foreground correctly, so it is called by reflection.
+            var showMenu = typeof(NotifyIcon).GetMethod("ShowContextMenu", System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic);
+            tray.MouseUp += (s, e) =>
+            {
+                if (e.Button != MouseButtons.Left) return;
+                if (showMenu != null) showMenu.Invoke(tray, null); else menu.Show(Cursor.Position);
+            };
+            overlay.Click += () => menu.Show(Cursor.Position);
             ShowMode(0);
             tray.Visible = true;
 
@@ -115,6 +136,15 @@ namespace XingyaoPerf
 
         void Tick()
         {
+            // The tray icon is lost when Explorer starts after this app or restarts. An elevated app does not
+            // always get the TaskbarCreated message, so re-add the icon whenever the taskbar window changes.
+            IntPtr bar = Native.FindWindow("Shell_TrayWnd", null);
+            if (bar != IntPtr.Zero && bar != trayTaskbar)
+            {
+                tray.Visible = false;
+                tray.Visible = true;
+                trayTaskbar = bar;
+            }
             if (!settings.Overlay) { if (overlay.Visible) overlay.Hide(); return; }
             var s = monitor.Latest;
             if (s != shown) { shown = s; overlay.SetValues(s); }
@@ -152,6 +182,38 @@ namespace XingyaoPerf
             settings.Overlay = !settings.Overlay;
             overlayItem.Checked = settings.Overlay;
             settings.Save();
+        }
+
+        void ShowCharge(int limit)
+        {
+            for (int i = 0; i < 3; i++) chargeItems[i].Checked = ChargeLimits[i] == limit;
+        }
+
+        void RefreshCharge()
+        {
+            if (!Platform.FanReadAllowed) return;
+            ThreadPool.QueueUserWorkItem(_ =>
+            {
+                try { int limit = monitor.ReadChargeLimit(); ui.Post(__ => ShowCharge(limit), null); }
+                catch (Exception e) { Log.Write("read charge limit: " + e.Message); ui.Post(__ => ShowCharge(-1), null); }
+            });
+        }
+
+        void PickCharge(int limit)
+        {
+            ThreadPool.QueueUserWorkItem(_ =>
+            {
+                try
+                {
+                    monitor.SetChargeLimit(limit);
+                    ui.Post(__ => { ShowCharge(limit); tray.ShowBalloonTip(3000, "充电上限", limit == 0 ? "已关闭，会充到 100%" : "已设为 " + limit + "%，关机后也保持", ToolTipIcon.Info); }, null);
+                }
+                catch (Exception e)
+                {
+                    Log.Write("set charge limit " + limit + ": " + e.Message);
+                    ui.Post(__ => { RefreshCharge(); tray.ShowBalloonTip(5000, "设置充电上限失败", e.Message, ToolTipIcon.Error); }, null);
+                }
+            });
         }
 
         void PickLayout(int layout)
@@ -239,6 +301,8 @@ namespace XingyaoPerf
             using (var single = new Mutex(true, noElevate ? @"Local\xingyao-perf-test" : @"Local\xingyao-perf-single", out created))
             {
                 if (!created) return 0;
+                // Let Explorer's TaskbarCreated broadcast reach this elevated process, so the tray icon comes back.
+                Native.ChangeWindowMessageFilter(Native.RegisterWindowMessage("TaskbarCreated"), 1);
                 Application.EnableVisualStyles();
                 Application.SetCompatibleTextRenderingDefault(false);
                 Application.Run(new TrayApp());

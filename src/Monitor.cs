@@ -195,6 +195,25 @@ namespace XingyaoPerf
             Publish(mode);
         }
 
+        // Charge limit in percent, 0 when off. Called from a worker thread; the EC keeps the setting itself.
+        public int ReadChargeLimit()
+        {
+            var f = fans;
+            if (f == null) throw new InvalidOperationException("EC 端口不可用");
+            var v = f.ReadCharge();
+            return v[0] == 1 ? v[1] : 0;
+        }
+
+        // 0 writes back the factory state (off, 0, 0). 60 and 80 stop charging there and never force a discharge.
+        public void SetChargeLimit(int limit)
+        {
+            if (limit != 0 && limit != 60 && limit != 80) throw new ArgumentOutOfRangeException("limit");
+            var f = fans;
+            if (f == null) throw new InvalidOperationException("EC 端口不可用");
+            if (limit == 0) f.WriteCharge(0, 0, 0); else f.WriteCharge(1, limit, 100);
+            Log.Write("charge limit set to " + limit);
+        }
+
         public void Dispose()
         {
             running = false;
