@@ -37,6 +37,7 @@ CPU + 核显同时满载（`thermal-test.ps1 -Load both`，每档 150 秒，持�
 
 | 模式 | 峰值 W | 高功耗保持时长 | 持续 W | 持续核显 W | 持续 MHz | 峰值 °C | 持续 °C | 持续风扇 RPM |
 |---|---:|---:|---:|---:|---:|---:|---:|---:|
+| 办公 | 45.5 | 约 20 秒 | 22.0 | 12.5 | 1950 | 73 | 55 | 4913 / 4697 |
 | 平衡 | 46.2 | 约 40 秒 | 33.8 | 19.0 | 2532 | 77 | 63 | 6196 / 5989 |
 | 性能 | 46.1 | 约 60 秒 | 39.9 | 22.4 | 2732 | 78 | 69 | 6506 / 6282 |
 
@@ -90,8 +91,8 @@ CPU + 核显同时满载（`thermal-test.ps1 -Load both`，每档 150 秒，持�
 | 核心分组 | 线程 0–3 P 核，4–11 E 核，12–15 LPE 核 | 由拓扑推断 |
 | 封装功率 | `\Energy Meter(rapl_package0_pkg)\Power`（mW） | 可读 |
 | GPU 功耗 | `\Energy Meter(rapl_package0_pp1)\Power`（mW） | 已验证随核显负载变化 |
-| GPU 频率 | Intel `ControlLib.dll` | 未测试 |
-| 封装温度 | `root\WMI` `EsifDeviceInformation.Temperature`，需管理员（实现见 open-revo 的 `esif_thermal.rs`） | 已验证：`InstanceName` 以 `_0` 结尾的实例；ACPI 热区固定为 28°C，不可用 |
+| GPU 频率 | Intel `ControlLib.dll`，`ctlInit` 需带 Level Zero 标志，域类型 0 | 已验证，常驻内存增加约 43 MB |
+| 封装温度 | `root\WMI` `EsifDeviceInformation.Temperature`，需管理员（实现见 open-revo 的 `esif_thermal.rs`） | 已验证：`InstanceName` 以 `_0` 结尾的实例，需管理员；ACPI 热区固定为 28°C，不可用 |
 | 风扇转速 | PM2 端口，见上文 | 已验证 |
 
 ## 核显负载观察

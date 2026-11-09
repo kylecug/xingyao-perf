@@ -1,33 +1,48 @@
 # xingyao-perf
 
-机械革命星耀14（`XINGYAO Series-P916F-PTL`，Core Ultra X7 358H）的极简性能模式切换工具，用来替代官方控制中心的这一项功能。
+机械革命星耀14（`XINGYAO Series-P916F-PTL`，Core Ultra X7 358H）的极简性能工具：托盘切换性能模式，并在任务栏上直接显示监控数值。
 
-**当前状态：验证阶段，正式程序还没写。** 这里只有验证脚本和协议记录。
+单个 exe，约 38 KB，依赖系统自带的 .NET Framework。
 
-## 脚本
+## 功能
 
-都需要在管理员 PowerShell 中运行，并会先核对主板型号。
+- **模式切换：** 办公、平衡、性能。托盘图标显示当前模式，切换后会回读确认。
+- **任务栏监控：** P / E / LPE 核平均频率、CPU 封装功耗和温度、GPU 频率和功耗、两个风扇转速。全屏应用时自动隐藏。
+- **恢复模式：** 启动或唤醒后 60 秒内，把模式恢复成上次的选择。之后由 Fn 键等改动的模式会被记住。
+- **开机启动：** 通过提权的计划任务实现，不弹 UAC。
 
-| 脚本 | 作用 | 是否写入 |
-|---|---|---|
-| `scripts/probe-mode.ps1` | 读取当前模式 | 否 |
-| `scripts/switch-test.ps1` | 切到办公模式，观察 15 秒后恢复 | 是 |
-| `scripts/effect-test.ps1` | 三档依次满载，对比功耗和运算量，结束后恢复 | 是 |
-| `scripts/thermal-test.ps1` | 满载时记录功耗、频率、温度和风扇转速；`-Load cpu|gpu|both` 选择负载；`-Mode keep` 时不写入 | 默认是 |
+右键托盘图标或监控条打开菜单。
+
+## 构建和运行
 
 ```powershell
-powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\probe-mode.ps1
+.\build.ps1
+.\dist\xingyao-perf.exe
 ```
 
-`tools/` 里是只读的分析和摸底脚本，不会发送固件指令。
+构建使用 Windows 自带的 `csc.exe`，不需要 SDK。程序需要管理员权限，没有计划任务时会弹一次 UAC。
 
-**风险提示：** 写入操作属于未公开的固件接口，只在本文档记录的机型和 BIOS 上试过。不要在其他机型上去掉型号检查后运行。
+| 参数 | 作用 |
+|---|---|
+| `--no-gpu` | 不读 GPU 频率，常驻内存从约 70 MB 降到约 27 MB |
+| `--no-elevate` | 不请求管理员权限，模式和温度不可用 |
+| `--selftest <文件>` | 读取一遍所有数据并写入文件，不做任何写入 |
 
-## 计划
+设置和日志在 `%LOCALAPPDATA%\xingyao-perf`。
 
-1. 确认三档的实际功耗差异（`effect-test.ps1`）。
-2. 编写正式的小程序。
-3. 测试停用官方服务后的重启和睡眠行为。
-4. 加入监控：P / E / LPE 核频率、CPU 封装功率和温度、GPU 频率和功耗。
+## 风险提示
 
-协议细节和验证记录见 [docs/protocol.md](docs/protocol.md)。
+模式切换使用未公开的固件接口，只在 BIOS 1.00 和 1.01 上放行。其他 BIOS 或机型会自动禁用切换，只保留监控。BIOS 升级后需要重新验证。
+
+官方控制中心不知道这里的切换，它的界面可能显示旧模式。
+
+## 其他内容
+
+- `scripts/`：验证和测试脚本，`-Load cpu|gpu|both` 选择负载，`-Mode keep` 时不写入。
+- `tools/`：只读的分析和摸底脚本。
+- [docs/protocol.md](docs/protocol.md)：协议和验证记录。
+
+## 致谢
+
+- 性能模式协议：[faintonce/open-revo PR #166](https://github.com/faintonce/open-revo/pull/166)。
+- 风扇端口协议：[Kurisu934/FanControl.MechrevoPtl](https://github.com/Kurisu934/FanControl.MechrevoPtl)（MIT）。

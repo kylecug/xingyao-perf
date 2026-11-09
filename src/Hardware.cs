@@ -1,0 +1,310 @@
+using System;
+using System.Collections.Generic;
+using System.ComponentModel;
+using System.Diagnostics;
+using System.IO;
+using System.Management;
+using System.Runtime.InteropServices;
+using System.Security.Cryptography;
+using System.Threading;
+using Microsoft.Win32;
+using Microsoft.Win32.SafeHandles;
+
+namespace XingyaoPerf
+{
+    internal static class Platform
+    {
+        public const string Board = "XINGYAO Series-P916F-PTL";
+        public static readonly string BoardFound, BiosFound;
+
+        static Platform()
+        {
+            using (var k = Registry.LocalMachine.OpenSubKey(@"HARDWARE\DESCRIPTION\System\BIOS"))
+            {
+                BoardFound = k == null ? "" : ((k.GetValue("BaseBoardProduct") as string) ?? "").Trim();
+                BiosFound = k == null ? "" : ((k.GetValue("BIOSVersion") as string) ?? "").Trim();
+            }
+        }
+
+        // Mode writes are only proven on these firmware versions. A BIOS update turns them off until re-verified.
+        public static bool ModeWriteAllowed
+        {
+            get { return BoardFound == Board && (BiosFound == "1.00" || BiosFound == "1.01"); }
+        }
+        public static bool FanReadAllowed { get { return BoardFound == Board && BiosFound == "1.01"; } }
+    }
+
+    // Performance mode through root\WMI OemWMIMethod.OemWMIfun. Needs administrator rights.
+    internal sealed class Firmware
+    {
+        public const int Office = 1, Balanced = 2, Turbo = 3;
+        private readonly object gate = new object();
+        private ManagementObject inst;
+
+        private byte[] Call(params byte[] cmd)
+        {
+            lock (gate)
+            {
+                if (inst == null)
+                {
+                    using (var c = new ManagementClass(@"root\WMI", "OemWMIMethod", null))
+                    using (var all = c.GetInstances())
+                        foreach (ManagementObject m in all) { inst = m; break; }
+                    if (inst == null) throw new InvalidOperationException("OemWMIMethod has no instance");
+                }
+                var buf = new byte[64];
+                Array.Copy(cmd, buf, cmd.Length);
+                using (var input = inst.GetMethodParameters("OemWMIfun"))
+                {
+                    input["u8Input"] = buf;
+                    using (var output = inst.InvokeMethod("OemWMIfun", input, null))
+                        return (byte[])output["u8Output"];
+                }
+            }
+        }
+
+        public int ReadMode()
+        {
+            var o = Call(3, 9);
+            if (o[0] != 0 || o[1] < 1 || o[1] > 3) throw new InvalidOperationException("unexpected mode reply " + o[0] + "," + o[1]);
+            return o[1];
+        }
+
+        public void SetMode(int mode)
+        {
+            if (mode < 1 || mode > 3) throw new ArgumentOutOfRangeException("mode");
+            if (!Platform.ModeWriteAllowed) throw new InvalidOperationException("this BIOS is not verified for mode writes");
+            var o = Call(3, 10, (byte)mode);
+            if (o[0] != 0x93 + mode) throw new InvalidOperationException("unexpected ack 0x" + o[0].ToString("X2"));
+            var sw = Stopwatch.StartNew();
+            while (ReadMode() != mode)
+            {
+                if (sw.ElapsedMilliseconds > 1000) throw new InvalidOperationException("mode read-back did not match");
+                Thread.Sleep(20);
+            }
+        }
+    }
+
+    // Read-only PM2 EC queries for fan RPM, through the inpoutx64 driver already installed on this machine.
+    // Port protocol from Kurisu934/FanControl.MechrevoPtl (MIT), validated there on P916F-PTL BIOS 1.01.
+    internal sealed class FanReader : IDisposable
+    {
+        const string DriverHash = "F8965FDCE668692C3785AFA3559159F9A18287BC0D53ABB21902895A8ECF221B";
+        [DllImport("kernel32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
+        static extern SafeFileHandle CreateFile(string name, uint access, uint share, IntPtr sec, uint creation, uint flags, IntPtr tpl);
+        [DllImport("kernel32.dll", SetLastError = true)]
+        static extern bool DeviceIoControl(SafeFileHandle h, uint code, byte[] i, int il, byte[] o, int ol, out int n, IntPtr ov);
+
+        readonly SafeFileHandle h;
+        readonly Mutex mutex = new Mutex(false, @"Local\MechrevoPtlFanDiagnostic");
+
+        public FanReader()
+        {
+            if (!Platform.FanReadAllowed) throw new NotSupportedException("BIOS not verified for fan reads");
+            string driver = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.Windows), @"System32\drivers\inpoutx64.sys");
+            using (var f = File.OpenRead(driver))
+            using (var sha = SHA256.Create())
+                if (BitConverter.ToString(sha.ComputeHash(f)).Replace("-", "") != DriverHash)
+                    throw new NotSupportedException("inpoutx64 driver differs from the verified version");
+            h = CreateFile(@"\\.\inpoutx64", 0xc0000000, 3, IntPtr.Zero, 3, 0, IntPtr.Zero);
+            if (h.IsInvalid) throw new Win32Exception(Marshal.GetLastWin32Error());
+        }
+
+        byte In(ushort p)
+        {
+            byte[] i = new byte[16], o = new byte[16]; i[0] = (byte)p; int n;
+            if (!DeviceIoControl(h, 0x9c402004, i, 2, o, 16, out n, IntPtr.Zero) || n != 1) throw new IOException("port read failed");
+            return o[0];
+        }
+        void Out(ushort p, byte v)
+        {
+            byte[] i = new byte[16], o = new byte[16]; i[0] = (byte)p; i[2] = v; int n;
+            if (!DeviceIoControl(h, 0x9c402008, i, 3, o, 16, out n, IntPtr.Zero)) throw new IOException("port write failed");
+        }
+        void Wait(byte mask, byte want)
+        {
+            var sw = Stopwatch.StartNew();
+            while ((In(0x6c) & mask) != want)
+            {
+                if (sw.ElapsedMilliseconds > 500) throw new TimeoutException("EC handshake timeout");
+                Thread.Sleep(1);
+            }
+        }
+        // Only RPM queries can be issued. Pending output belongs to another client, so the sample is skipped.
+        byte Query(byte arg)
+        {
+            if (arg < 0x16 || arg > 0x19) throw new ArgumentException("query not allowed");
+            Wait(2, 0);
+            if ((In(0x6c) & 1) != 0) throw new IOException("EC output pending");
+            Out(0x6c, 0xd5); Wait(2, 0); Out(0x68, arg); Wait(1, 1);
+            return In(0x68);
+        }
+        int Rpm(byte lo, byte hi)
+        {
+            for (int a = 0; a < 3; a++)
+            {
+                byte b = Query(hi), l = Query(lo), c = Query(hi);
+                if (b == c) { int rpm = l + 256 * c; if (rpm <= 16000) return rpm; }
+            }
+            throw new IOException("RPM sample unstable");
+        }
+        public void Read(out int fan0, out int fan1)
+        {
+            bool got = false;
+            try
+            {
+                try { got = mutex.WaitOne(100); } catch (AbandonedMutexException) { got = true; }
+                if (!got) throw new IOException("EC channel busy");
+                fan0 = Rpm(0x18, 0x19); fan1 = Rpm(0x16, 0x17);
+            }
+            finally { if (got) mutex.ReleaseMutex(); }
+        }
+        public void Dispose() { h.Dispose(); mutex.Dispose(); }
+    }
+
+    // GPU frequency through the Intel Graphics Control Library that ships with the driver.
+    internal sealed class GpuFreq : IDisposable
+    {
+        const string D = "ControlLib.dll";
+        [StructLayout(LayoutKind.Sequential)] struct InitArgs { public uint Size; public byte Version; public uint AppVersion; public uint Flags; public uint Supported; public uint U1, U2, U3, U4; }
+        [StructLayout(LayoutKind.Sequential)] struct FreqProps { public uint Size; public byte Version; public int Type; public byte CanControl; public double Min, Max; }
+        [StructLayout(LayoutKind.Sequential)] struct FreqState { public uint Size; public byte Version; public double Voltage, Request, Tdp, Efficient, Actual; public uint Throttle; }
+        [DllImport(D, CallingConvention = CallingConvention.Cdecl)] static extern int ctlInit(ref InitArgs a, out IntPtr h);
+        [DllImport(D, CallingConvention = CallingConvention.Cdecl)] static extern int ctlClose(IntPtr h);
+        [DllImport(D, CallingConvention = CallingConvention.Cdecl)] static extern int ctlEnumerateDevices(IntPtr h, ref uint n, IntPtr[] d);
+        [DllImport(D, CallingConvention = CallingConvention.Cdecl)] static extern int ctlEnumFrequencyDomains(IntPtr d, ref uint n, IntPtr[] f);
+        [DllImport(D, CallingConvention = CallingConvention.Cdecl)] static extern int ctlFrequencyGetProperties(IntPtr f, ref FreqProps p);
+        [DllImport(D, CallingConvention = CallingConvention.Cdecl)] static extern int ctlFrequencyGetState(IntPtr f, ref FreqState s);
+
+        readonly IntPtr api, domain;
+
+        public GpuFreq()
+        {
+            var a = new InitArgs();
+            a.Size = (uint)Marshal.SizeOf(typeof(InitArgs));
+            a.AppVersion = (1u << 16) | 1u;
+            a.Flags = 1; // CTL_INIT_FLAG_USE_LEVEL_ZERO, required for telemetry
+            int r = ctlInit(ref a, out api);
+            if (r != 0) throw new InvalidOperationException("ctlInit 0x" + r.ToString("X8"));
+            uint n = 0;
+            ctlEnumerateDevices(api, ref n, null);
+            if (n == 0) throw new InvalidOperationException("no IGCL device");
+            var devs = new IntPtr[n];
+            ctlEnumerateDevices(api, ref n, devs);
+            uint m = 0;
+            r = ctlEnumFrequencyDomains(devs[0], ref m, null);
+            if (r != 0 || m == 0) throw new InvalidOperationException("no frequency domain 0x" + r.ToString("X8"));
+            var fs = new IntPtr[m];
+            ctlEnumFrequencyDomains(devs[0], ref m, fs);
+            foreach (var f in fs)
+            {
+                var p = new FreqProps();
+                p.Size = (uint)Marshal.SizeOf(typeof(FreqProps));
+                if (ctlFrequencyGetProperties(f, ref p) == 0 && p.Type == 0) { domain = f; break; }
+            }
+            if (domain == IntPtr.Zero) throw new InvalidOperationException("no GPU frequency domain");
+        }
+
+        public double ReadMhz()
+        {
+            var s = new FreqState();
+            s.Size = (uint)Marshal.SizeOf(typeof(FreqState));
+            int r = ctlFrequencyGetState(domain, ref s);
+            if (r != 0) throw new InvalidOperationException("ctlFrequencyGetState 0x" + r.ToString("X8"));
+            return s.Actual < 0 ? double.NaN : s.Actual;
+        }
+
+        public void Dispose() { if (api != IntPtr.Zero) ctlClose(api); }
+    }
+
+    // Package temperature from Intel DTT. Domain 0 is the processor package. Needs administrator rights.
+    internal sealed class PackageTemp
+    {
+        public double Read()
+        {
+            using (var s = new ManagementObjectSearcher(@"root\WMI", "SELECT InstanceName, Temperature FROM EsifDeviceInformation"))
+            using (var all = s.Get())
+                foreach (ManagementObject o in all)
+                    using (o)
+                    {
+                        var name = o["InstanceName"] as string;
+                        if (name == null || !name.EndsWith("_0")) continue;
+                        double t = Convert.ToDouble(o["Temperature"]);
+                        if (t > 0 && t < 125) return t;
+                    }
+            return double.NaN;
+        }
+    }
+
+    // Core frequencies and RAPL power from Windows performance counters.
+    internal sealed class CounterSet : IDisposable
+    {
+        readonly IntPtr q, pkg, gpu;
+        readonly List<IntPtr> p = new List<IntPtr>(), e = new List<IntPtr>(), l = new List<IntPtr>();
+
+        public CounterSet()
+        {
+            Check(Native.PdhOpenQuery(null, IntPtr.Zero, out q));
+            Check(Native.PdhAddEnglishCounter(q, @"\Energy Meter(rapl_package0_pkg)\Power", IntPtr.Zero, out pkg));
+            Check(Native.PdhAddEnglishCounter(q, @"\Energy Meter(rapl_package0_pp1)\Power", IntPtr.Zero, out gpu));
+            foreach (var c in ReadTopology())
+            {
+                IntPtr h;
+                Check(Native.PdhAddEnglishCounter(q, @"\Processor Information(0," + c.Key + @")\Actual Frequency", IntPtr.Zero, out h));
+                (c.Value == 'P' ? p : c.Value == 'E' ? e : l).Add(h);
+            }
+            Native.PdhCollectQueryData(q);
+        }
+
+        // P cores have the highest efficiency class. LPE cores share neither their class nor their last-level cache with P cores.
+        static IEnumerable<KeyValuePair<int, char>> ReadTopology()
+        {
+            uint len;
+            Native.GetSystemCpuSetInformation(IntPtr.Zero, 0, out len, IntPtr.Zero, 0);
+            var mem = Marshal.AllocHGlobal((int)len);
+            var items = new List<int[]>();
+            try
+            {
+                if (!Native.GetSystemCpuSetInformation(mem, len, out len, IntPtr.Zero, 0)) throw new Win32Exception(Marshal.GetLastWin32Error());
+                for (int off = 0; off < len; off += Marshal.ReadInt32(mem, off))
+                    items.Add(new[] { (int)Marshal.ReadByte(mem, off + 14), Marshal.ReadByte(mem, off + 16), Marshal.ReadByte(mem, off + 18) });
+            }
+            finally { Marshal.FreeHGlobal(mem); }
+            int top = 0, topLlc = 0;
+            foreach (var i in items) if (i[2] > top) { top = i[2]; topLlc = i[1]; }
+            var r = new List<KeyValuePair<int, char>>();
+            foreach (var i in items)
+                r.Add(new KeyValuePair<int, char>(i[0], i[2] == top ? 'P' : i[1] == topLlc ? 'E' : 'L'));
+            return r;
+        }
+
+        static void Check(int status) { if (status != 0) throw new Win32Exception(status); }
+
+        double One(IntPtr c)
+        {
+            uint t; Native.PDH_VALUE v;
+            return Native.PdhGetFormattedCounterValue(c, Native.PDH_FMT_DOUBLE, out t, out v) == 0 ? v.Value : double.NaN;
+        }
+        double Avg(List<IntPtr> cs)
+        {
+            double s = 0; int n = 0;
+            foreach (var c in cs) { double x = One(c); if (!double.IsNaN(x)) { s += x; n++; } }
+            return n == 0 ? double.NaN : s / n / 1000.0;
+        }
+
+        public void Sample(Snapshot s)
+        {
+            Native.PdhCollectQueryData(q);
+            s.PGhz = Avg(p); s.EGhz = Avg(e); s.LGhz = Avg(l);
+            s.PkgW = One(pkg) / 1000.0; s.GpuW = One(gpu) / 1000.0;
+        }
+
+        public void Dispose() { Native.PdhCloseQuery(q); }
+    }
+
+    internal sealed class Snapshot
+    {
+        public double PGhz = double.NaN, EGhz = double.NaN, LGhz = double.NaN, PkgW = double.NaN, GpuW = double.NaN, TempC = double.NaN, GpuMhz = double.NaN;
+        public int Fan0 = -1, Fan1 = -1, Mode;
+    }
+}
