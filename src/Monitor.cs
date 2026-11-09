@@ -74,7 +74,7 @@ namespace XingyaoPerf
     internal sealed class Monitor : IDisposable
     {
         // One sample a second, plus the time the sample takes. Other checks count samples, so they are in seconds.
-        const int IntervalMs = 1000, ModeEveryTicks = 6, FanResendTicks = 6, RestoreWindowSeconds = 60, SleepGapSeconds = 30;
+        const int IntervalMs = 1000, ModeEveryTicks = 6, RestoreWindowSeconds = 60, SleepGapSeconds = 30;
 
         public readonly Firmware Firmware = new Firmware();
         readonly Settings settings;
@@ -169,7 +169,7 @@ namespace XingyaoPerf
                 if (checkCaps && tick >= 3) { KeepGpuCap(); KeepCpuCap(); checkCaps = false; }
                 if (tick++ % ModeEveryTicks == 0) CheckMode();
                 latest = SampleOnce();
-                if (fanPercent > 0) KeepFan(latest, tick);
+                if (fanPercent > 0) KeepFan(latest);
                 Thread.Sleep(IntervalMs);
             }
         }
@@ -241,18 +241,13 @@ namespace XingyaoPerf
             if (h != null) h(why);
         }
 
-        // While manual: hand back to the EC when hot or when the temperature cannot be read, and re-send the
-        // speed every 6 s in case the EC drops it.
-        void KeepFan(Snapshot s, int tick)
+        // While manual: hand back to the EC when hot or when the temperature cannot be read.
+        // The EC keeps a manual speed on its own (held 60 s after one D6 in a test), so it is not re-sent.
+        void KeepFan(Snapshot s)
         {
             if (double.IsNaN(s.TempC)) { if (++fanUnknownTemp >= 6) { ReleaseFan("读不到温度"); return; } }
             else fanUnknownTemp = 0;
-            if (s.TempC >= FanSafeTempC) { ReleaseFan("温度 " + s.TempC.ToString("0") + " °C"); return; }
-            if (tick % FanResendTicks == 0)
-            {
-                var f = fans;
-                try { if (f != null) f.SetFanPercent(fanPercent); } catch (Exception e) { Log.Write("fan resend: " + e.Message); }
-            }
+            if (s.TempC >= FanSafeTempC) ReleaseFan("温度 " + s.TempC.ToString("0") + " °C");
         }
 
         // Before sleep the EC must own the fans again.
