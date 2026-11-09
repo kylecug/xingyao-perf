@@ -55,7 +55,10 @@ namespace XingyaoPerf
             return false;
         }
         Snapshot values;
-        Font font;
+        Font font, fpsFont;
+        readonly FrameRate fps = new FrameRate();
+        double fpsValue = double.NaN;
+        DateTime fpsReadAt = DateTime.UtcNow;
         int lastH, lastX = int.MinValue, lastY = int.MinValue;
         bool shown, dirty = true;
 
@@ -88,6 +91,8 @@ namespace XingyaoPerf
         {
             if (shown && Handle != IntPtr.Zero) Native.ShowWindow(Handle, Native.SW_HIDE);
             shown = false;
+            if (fps.Running) fps.Stop(); // frames are only counted while the overlay is up
+            fpsValue = double.NaN;
         }
 
         // Called on the UI timer.
@@ -105,8 +110,21 @@ namespace XingyaoPerf
             if (h != lastH)
             {
                 if (font != null) font.Dispose();
+                if (fpsFont != null) fpsFont.Dispose();
                 font = Overlay.MakeFont(h);
+                fpsFont = new Font("Segoe UI", h * 0.4f, FontStyle.Bold, GraphicsUnit.Pixel);
                 lastH = h; dirty = true;
+            }
+
+            // Frame rate of the window in front, refreshed once a second.
+            uint pid;
+            Native.GetWindowThreadProcessId(f, out pid);
+            fps.Track((int)pid);
+            if ((DateTime.UtcNow - fpsReadAt).TotalSeconds >= 1)
+            {
+                fpsReadAt = DateTime.UtcNow;
+                double v = fps.Read();
+                if (Math.Round(v) != Math.Round(fpsValue) || double.IsNaN(v) != double.IsNaN(fpsValue)) { fpsValue = v; dirty = true; }
             }
             if (Handle == IntPtr.Zero)
             {
@@ -126,7 +144,8 @@ namespace XingyaoPerf
         void Draw()
         {
             int pad = lastH / 8;
-            int barW = Overlay.WidthFor(lastH, false), w = barW + pad * 2, h = lastH + pad;
+            int fpsW = (int)(lastH * 1.15f); // frame rate box on the left, as tall as both bar rows
+            int barW = Overlay.WidthFor(lastH, false), w = fpsW + barW + pad * 3, h = lastH + pad;
             renderer.SetValues(values);
             using (var bmp = new Bitmap(w, h, System.Drawing.Imaging.PixelFormat.Format32bppArgb))
             {
@@ -144,7 +163,8 @@ namespace XingyaoPerf
                         path.CloseFigure();
                         g.FillPath(bg, path);
                     }
-                    using (var bars = renderer.Render(barW, lastH, font, false, false)) g.DrawImage(bars, pad, pad / 2, barW, lastH);
+                    using (var bars = renderer.Render(barW, lastH, font, false, false)) g.DrawImage(bars, pad * 2 + fpsW, pad / 2, barW, lastH);
+                    DrawFps(g, new RectangleF(pad, pad / 2f + lastH * 0.04f, fpsW, lastH * 0.92f));
                 }
                 IntPtr screen = Native.GetDC(IntPtr.Zero), mem = Native.CreateCompatibleDC(screen);
                 IntPtr hbmp = bmp.GetHbitmap(Color.FromArgb(0)), old = Native.SelectObject(mem, hbmp);
@@ -166,8 +186,33 @@ namespace XingyaoPerf
             }
         }
 
+        void DrawFps(Graphics g, RectangleF r)
+        {
+            using (var box = new SolidBrush(Color.FromArgb(60, 255, 255, 255)))
+            using (var path = new GraphicsPath())
+            {
+                float d = r.Height / 6;
+                path.AddArc(r.Left, r.Top, d, d, 180, 90);
+                path.AddArc(r.Right - d, r.Top, d, d, 270, 90);
+                path.AddArc(r.Right - d, r.Bottom - d, d, d, 0, 90);
+                path.AddArc(r.Left, r.Bottom - d, d, d, 90, 90);
+                path.CloseFigure();
+                g.FillPath(box, path);
+            }
+            g.TextRenderingHint = System.Drawing.Text.TextRenderingHint.AntiAliasGridFit;
+            using (var center = new StringFormat { Alignment = StringAlignment.Center, LineAlignment = StringAlignment.Center, FormatFlags = StringFormatFlags.NoWrap | StringFormatFlags.NoClip })
+            {
+                var top = new RectangleF(r.Left, r.Top, r.Width, r.Height * 0.62f);
+                var bottom = new RectangleF(r.Left, r.Top + r.Height * 0.58f, r.Width, r.Height * 0.4f);
+                g.DrawString(double.IsNaN(fpsValue) ? "--" : fpsValue.ToString("0"), fpsFont, Brushes.White, top, center);
+                using (var dim = new SolidBrush(Color.FromArgb(200, 255, 255, 255))) g.DrawString("FPS", font, dim, bottom, center);
+            }
+        }
+
         public void Dispose()
         {
+            fps.Dispose();
+            if (fpsFont != null) fpsFont.Dispose();
             if (font != null) font.Dispose();
             renderer.Dispose();
             if (Handle != IntPtr.Zero) DestroyHandle();
