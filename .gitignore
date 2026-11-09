@@ -1,0 +1,6 @@
+# Test transcripts contain the local user and machine names
+*-result*.txt
+*.log
+bin/
+obj/
+*.exe
