@@ -32,8 +32,10 @@ namespace XingyaoPerf
         IntPtr logFile, loggerName;
         Thread thread;
         volatile int target; // process id being counted, 0 for none
-        int count;
-        DateTime countedSince = DateTime.UtcNow;
+        // QPC timestamps of recent presents. ETW delivers events in batches about once a second, so counting
+        // arrivals per second jumps around; the rate is worked out from the events' own timestamps instead.
+        readonly long[] stamps = new long[2048];
+        int stampCount; // total stored since the target changed
         bool failed;
 
         public FrameRate() { callback = OnEvent; }
@@ -43,9 +45,12 @@ namespace XingyaoPerf
         void OnEvent(IntPtr record)
         {
             // EVENT_RECORD: EventHeader.ProcessId at 12, EventHeader.EventDescriptor.Id at 40.
+            // EventHeader.TimeStamp at 16 is a QPC value, because the session uses ClientContext 1.
             if (Marshal.ReadInt32(record, 12) != target) return;
             ushort id = (ushort)Marshal.ReadInt16(record, 40);
-            if (id == PresentStart || id == PresentMpoStart) Interlocked.Increment(ref count);
+            if (id != PresentStart && id != PresentMpoStart) return;
+            long ts = Marshal.ReadInt64(record, 16);
+            lock (stamps) { stamps[stampCount % stamps.Length] = ts; stampCount++; }
         }
 
         static IntPtr NewProps()
@@ -68,7 +73,7 @@ namespace XingyaoPerf
         {
             lock (gate)
             {
-                if (target != pid) { target = pid; Interlocked.Exchange(ref count, 0); countedSince = DateTime.UtcNow; }
+                if (target != pid) { target = pid; lock (stamps) stampCount = 0; }
                 if (thread != null) return true;
                 if (failed) return false;
                 try { Start(); return true; }
@@ -76,15 +81,28 @@ namespace XingyaoPerf
             }
         }
 
-        // Frames per second since the last call, or NaN when nothing has been counted for a while.
+        // Frames per second over the last second of presents, by their timestamps; NaN when there were none
+        // in the last 2 seconds.
         public double Read()
         {
-            var now = DateTime.UtcNow;
-            double seconds = (now - countedSince).TotalSeconds;
-            if (seconds < 0.5) return double.NaN;
-            int n = Interlocked.Exchange(ref count, 0);
-            countedSince = now;
-            return n == 0 ? double.NaN : n / seconds;
+            long freq = System.Diagnostics.Stopwatch.Frequency, now = System.Diagnostics.Stopwatch.GetTimestamp();
+            lock (stamps)
+            {
+                if (stampCount < 2) return double.NaN;
+                int stored = Math.Min(stampCount, stamps.Length);
+                long newest = stamps[(stampCount - 1) % stamps.Length];
+                if (now - newest > 2 * freq) return double.NaN;
+                long oldest = newest;
+                int n = 1;
+                for (int k = 2; k <= stored; k++)
+                {
+                    long t = stamps[(stampCount - k) % stamps.Length];
+                    if (newest - t > freq) break;
+                    oldest = t; n++;
+                }
+                if (n < 2 || newest == oldest) return double.NaN;
+                return (n - 1) * (double)freq / (newest - oldest);
+            }
         }
 
         void Start()
