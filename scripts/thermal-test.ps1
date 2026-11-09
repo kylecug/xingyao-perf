@@ -184,27 +184,28 @@ function Fan-Avg($rows, $idx, $from) {
     return -1
 }
 function Run-One($label) {
-    "--- $label : idle $CoolSeconds s ---"
+    # Run-One returns its summary object through the pipeline, so progress must go to the host.
+    Write-Host "--- $label : idle $CoolSeconds s ---"
     $sw = [Diagnostics.Stopwatch]::StartNew(); $next = 0
     while ($sw.Elapsed.TotalSeconds -lt $CoolSeconds) {
-        if ($sw.Elapsed.TotalSeconds -ge $next) { Sample-Line 'idle' $sw.Elapsed.TotalSeconds | ForEach-Object { "$($_.Phase) t=$($_.T) pkg=$($_.Watts)W gpu=$($_.GpuW)W $($_.MHz)MHz $($_.TempC)C flags=$($_.LimitFlags) ec=$($_.Ec)" }; $next += 30 }
+        if ($sw.Elapsed.TotalSeconds -ge $next) { Sample-Line 'idle' $sw.Elapsed.TotalSeconds | ForEach-Object { Write-Host "$($_.Phase) t=$($_.T) pkg=$($_.Watts)W gpu=$($_.GpuW)W $($_.MHz)MHz $($_.TempC)C flags=$($_.LimitFlags) ec=$($_.Ec)" }; $next += 30 }
         Start-Sleep -Seconds 1
     }
-    "--- $label : load $LoadSeconds s ---"
+    Write-Host "--- $label : load $LoadSeconds s ---"
     $rows = @(); $c0 = 0; $g0 = 0; $t0 = 0; $from = $LoadSeconds - 30
-    if ($Load -ne 'cpu') { "GPU load on: $([GpuLoad]::Start())" }
+    if ($Load -ne 'cpu') { Write-Host "GPU load on: $([GpuLoad]::Start())" }
     if ($Load -ne 'gpu') { [CpuLoad]::Start([Environment]::ProcessorCount) }
     $sw = [Diagnostics.Stopwatch]::StartNew()
     try {
         while ($sw.Elapsed.TotalSeconds -lt $LoadSeconds) {
             $r = Sample-Line 'load' $sw.Elapsed.TotalSeconds
             $rows += $r
-            "load t=$($r.T) pkg=$($r.Watts)W gpu=$($r.GpuW)W $($r.MHz)MHz $($r.TempC)C flags=$($r.LimitFlags) ec=$($r.Ec)"
+            Write-Host "load t=$($r.T) pkg=$($r.Watts)W gpu=$($r.GpuW)W $($r.MHz)MHz $($r.TempC)C flags=$($r.LimitFlags) ec=$($r.Ec)"
             if ($t0 -eq 0 -and $sw.Elapsed.TotalSeconds -ge $from) { $c0 = [CpuLoad]::Total(); $g0 = [GpuLoad]::Total(); $t0 = $sw.Elapsed.TotalSeconds }
             Start-Sleep -Seconds $SampleSeconds
         }
         $c1 = [CpuLoad]::Total(); $g1 = [GpuLoad]::Total(); $t1 = $sw.Elapsed.TotalSeconds
-        if ([GpuLoad]::Error()) { "GPU LOAD ERROR: $([GpuLoad]::Error())" }
+        if ([GpuLoad]::Error()) { Write-Host "GPU LOAD ERROR: $([GpuLoad]::Error())" }
     } finally { [CpuLoad]::Stop(); [GpuLoad]::Stop() }
     [pscustomobject]@{
         Run = $label; Wmi = $names[(Read-Mode)]
@@ -267,6 +268,6 @@ try {
     }
     [void][CpuLoad]::AllowSleep()
     if ($script:ec) { $script:ec.Dispose() }
-    if ($results) { "=== SUMMARY ==="; $results | Format-Table -AutoSize | Out-String -Width 200 | Write-Output }
+    if ($results) { "=== SUMMARY ==="; $results | Format-Table -Property * -AutoSize | Out-String -Width 200 | Write-Output }
     Stop-Transcript | Out-Null
 }

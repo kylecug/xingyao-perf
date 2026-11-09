@@ -31,14 +31,24 @@
 | 办公 | 33.2 | 24.4 | 3380 | 83294 |
 | 性能 | 35.2 | 31.5 | 3642 | 89981 |
 
-办公模式的功耗确实下降。性能与平衡基本相同，原因待查（`thermal-test.ps1`）。
+办公模式的功耗确实下降。只跑 CPU 时性能与平衡基本相同，频率也几乎一样。
+
+CPU + 核显同时满载（`thermal-test.ps1 -Load both`，每档 150 秒，持续值取最后 30 秒，开着 GamePP）：
+
+| 模式 | 峰值 W | 高功耗保持时长 | 持续 W | 持续核显 W | 持续 MHz | 峰值 °C | 持续 °C | 持续风扇 RPM |
+|---|---:|---:|---:|---:|---:|---:|---:|---:|
+| 平衡 | 46.2 | 约 40 秒 | 33.8 | 19.0 | 2532 | 77 | 63 | 6196 / 5989 |
+| 性能 | 46.1 | 约 60 秒 | 39.9 | 22.4 | 2732 | 78 | 69 | 6506 / 6282 |
+
+结论：直连切换到性能模式有效。持续功耗高约 6 W，温度远未到上限，`Performance Limit Flags` 全程为 0。只跑 CPU 测不出差别，可能是 CPU 频率先到顶，这点尚未证实。
 
 待验证：
 
-- 性能模式为什么没有比平衡更高，以及官方界面切换是否不同。
 - 停用官方服务后的重启、睡眠唤醒和 Fn 键行为。
 
-## 风扇（PM2 端口，未在本机实测）
+## 风扇（PM2 端口）
+
+转速和模式读取已在本机验证：负载中连续采样无错误，EC 读到的模式与 WMI 一致，转速随负载上升。风扇写入未在本机测试。
 
 来源：[Kurisu934/FanControl.MechrevoPtl](https://github.com/Kurisu934/FanControl.MechrevoPtl)（MIT），在 P916F-PTL BIOS 1.01 / EC 01.01.00 上实测。依赖现有 `inpoutx64` 驱动，SHA-256 `F8965FDC…F221B`，本机一致。
 
@@ -79,10 +89,10 @@
 | 核心频率 | `\Processor Information(0,*)\Actual Frequency` | 可读 |
 | 核心分组 | 线程 0–3 P 核，4–11 E 核，12–15 LPE 核 | 由拓扑推断 |
 | 封装功率 | `\Energy Meter(rapl_package0_pkg)\Power`（mW） | 可读 |
-| GPU 功耗 | `\Energy Meter(rapl_package0_pp1)\Power`（mW） | 可读，含义待核实 |
+| GPU 功耗 | `\Energy Meter(rapl_package0_pp1)\Power`（mW） | 已验证随核显负载变化 |
 | GPU 频率 | Intel `ControlLib.dll` | 未测试 |
-| 封装温度 | `root\WMI` `EsifDeviceInformation.Temperature`，需管理员（实现见 open-revo 的 `esif_thermal.rs`） | 待本机确认；ACPI 热区固定为 28°C，不可用 |
-| 风扇转速 | PM2 端口，见上文 | 待本机确认 |
+| 封装温度 | `root\WMI` `EsifDeviceInformation.Temperature`，需管理员（实现见 open-revo 的 `esif_thermal.rs`） | 已验证：`InstanceName` 以 `_0` 结尾的实例；ACPI 热区固定为 28°C，不可用 |
+| 风扇转速 | PM2 端口，见上文 | 已验证 |
 
 ## 核显负载观察
 
