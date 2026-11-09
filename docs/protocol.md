@@ -92,7 +92,7 @@ CPU + 核显同时满载（`thermal-test.ps1 -Load both`，每档 150 秒，持�
 
 ## 电池充电上限（未在本机验证）
 
-本机首次写入（`scripts/battery-limit.ps1 -Action set -Limit 80`），2026-11-09 12:51：`F1 10`、`F3 100`、`F2 80`、`F1 11` 都正常完成，回显正确，关闭和启用命令没有多余返回。回读为 `enabled=1, lower=80, upper=100`。当时电量 77%，用电池供电。之后插原装电源充电，停在 79%（剩余 66344 / 满充 83951 mWh），`ac=True`，不充电也不放电，设置有效。比设定值低 1%，可能是 EC 和 Windows 计算电量的方式不同。重启和关机后是否保留，待验证。原值 `0,0,0` 保存在 `%LOCALAPPDATA%\xingyao-perf\battery-original.txt`，用 `-Action restore` 写回。
+本机首次写入（`scripts/battery-limit.ps1 -Action set -Limit 80`），2026-11-09 12:51：`F1 10`、`F3 100`、`F2 80`、`F1 11` 都正常完成，回显正确，关闭和启用命令没有多余返回。回读为 `enabled=1, lower=80, upper=100`。当时电量 77%，用电池供电。之后插原装电源充电，停在 79%（剩余 66344 / 满充 83951 mWh），`ac=True`，不充电也不放电，设置有效。比设定值低 1%，可能是 EC 和 Windows 计算电量的方式不同。关机后用户用功率计观察：插电只有一两秒约 60 W 的冲击，随后接近 0；拔电几十分钟再插上也一样，说明关机时 EC 仍在限充。关机再开机后回读仍为 `enabled=1, lower=80, upper=100`，电量 79%，插电不充电。电池完全耗尽或升级 BIOS/EC 后是否保留，待验证。原值 `0,0,0` 保存在 `%LOCALAPPDATA%\xingyao-perf\battery-original.txt`，用 `-Action restore` 写回。
 
 之前只发送过读取命令时的记录：
 

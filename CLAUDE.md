@@ -18,10 +18,12 @@ Reboot auto-start and kept mode are confirmed from logs; the user has not yet co
 
 ## Running without the official background
 
-The official background is currently disabled on this machine with `scripts/vendor-service.ps1` (`-Action status|disable|restore`). Mode switching, monitoring, Fn keys, sleep and wake, reboot, and charging all passed; see `docs/protocol.md`. With the background off, the battery charges to 100% with no limit, so the only known loss is charge protection.
+The official background is currently disabled on this machine with `scripts/vendor-service.ps1` (`-Action status|disable|restore`). Mode switching, monitoring, Fn keys, sleep and wake, reboot, and charging all passed; see `docs/protocol.md`. With the background off nothing limited charging, so the only loss was charge protection, now replaced by the charge limit below.
 
 If anything needed is lost, run `restore`. Before suggesting an uninstall of the official software, check whether it would remove `inpoutx64`, which fan reading needs.
 
-## Next feature: battery charge limit
+## Battery charge limit
 
-Thresholds read `enabled=0, lower=0, upper=0` with `battery-read.ps1`. Write commands have never been sent here, and BIOS 1.01 is unverified for them. Tell the user the exact commands before a single test write. Testing needs the battery below the limit before plugging in, for example under 80% for an 80% limit.
+`scripts/battery-limit.ps1` (`-Action status|set|restore`, `-Limit 60|80`) sets the EC charge thresholds; the write sequence is now verified on this machine (see `docs/protocol.md`). Set to 80% on 2026-11-09: charging on AC stopped at 79% (Windows' figure) with no discharge, which the user accepts. With the laptop shut down, a power meter showed only a 1-2 second spike then near zero, also after unplugging for tens of minutes, so the EC enforces it while off. After shutdown and restart the thresholds still read `1,80,100`. Still unknown: a full battery drain or a BIOS/EC update; if charging goes past 80% again, rerun `set`.
+
+Not yet in the tray app. The original values (`0,0,0`) are saved in `%LOCALAPPDATA%\xingyao-perf\battery-original.txt` for `restore`.
