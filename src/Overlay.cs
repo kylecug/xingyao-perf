@@ -28,7 +28,11 @@ namespace XingyaoPerf
         const int WM_MOUSEACTIVATE = 0x21, MA_NOACTIVATE = 3, WM_RBUTTONUP = 0x205;
 
         // Layout in pixels for a 60 px tall taskbar, scaled to the real height.
-        const float RowH = 26, RowGap = 3, Radius = 3, LabelW = 40, PctW = 60, FreqW = 68, InnerGap = 3, PowerW = 76, TempW = 66, FanW = 92, ColGap = 8;
+        const float RowH = 26, RowGap = 3, Radius = 3, LabelW = 30, PctW = 40, FreqW = 45, InnerGap = 2, PowerW = 51, TempW = 44, FanW = 63, ColGap = 5;
+
+        // Room for the Windows weather button, which sits beside the tray when taskbar icons are left-aligned.
+        const float WeatherW = 200;
+        public bool AvoidWeather;
 
         // Bars are full at these values. Frequency scales are for display only.
         const double CpuGhzMax = 5.0, GpuGhzMax = 2.5, PkgWMax = 60, GpuWMax = 40, TempMin = 30, TempMax = 100, FanMax = 7500;
@@ -141,7 +145,7 @@ namespace XingyaoPerf
             if (Handle == IntPtr.Zero || (!embedFailed && embeddedIn != bar)) Create(bar);
             if (!shown) { Native.ShowWindow(Handle, Native.SW_SHOWNA); shown = true; drawn = null; }
 
-            int x = right - width - 8, y = r.Top;
+            int x = right - width - 8 - (AvoidWeather ? (int)Math.Ceiling(h / 60f * WeatherW) : 0), y = r.Top;
             if (embeddedIn != IntPtr.Zero)
             {
                 x -= r.Left; y -= r.Top; // Child positions are relative to the taskbar.
@@ -154,7 +158,7 @@ namespace XingyaoPerf
                 Native.SetWindowPos(Handle, Native.HWND_TOPMOST, 0, 0, 0, 0, Native.SWP_NOMOVE | Native.SWP_NOSIZE | Native.SWP_NOACTIVATE);
         }
 
-        public static Font MakeFont(int h) { return new Font("Segoe UI", Math.Max(9f, h * 0.27f), FontStyle.Regular, GraphicsUnit.Pixel); }
+        public static Font MakeFont(int h) { return new Font("Segoe UI", Math.Max(9f, h * 0.24f), FontStyle.Regular, GraphicsUnit.Pixel); }
 
         static bool TaskbarOnScreen(Native.RECT r)
         {
@@ -222,8 +226,8 @@ namespace XingyaoPerf
             var bmp = new Bitmap(w, h, PixelFormat.Format32bppArgb);
             using (var g = Graphics.FromImage(bmp))
             using (var label = new SolidBrush(light ? Color.FromArgb(40, 40, 40) : Color.FromArgb(225, 225, 225)))
-            using (var center = new StringFormat { Alignment = StringAlignment.Center, LineAlignment = StringAlignment.Center, FormatFlags = StringFormatFlags.NoWrap })
-            using (var left = new StringFormat { Alignment = StringAlignment.Near, LineAlignment = StringAlignment.Center, FormatFlags = StringFormatFlags.NoWrap })
+            using (var center = new StringFormat { Alignment = StringAlignment.Center, LineAlignment = StringAlignment.Center, FormatFlags = StringFormatFlags.NoWrap | StringFormatFlags.NoClip, Trimming = StringTrimming.None })
+            using (var left = new StringFormat { Alignment = StringAlignment.Near, LineAlignment = StringAlignment.Center, FormatFlags = StringFormatFlags.NoWrap | StringFormatFlags.NoClip, Trimming = StringTrimming.None })
             {
                 // Alpha 1 is invisible but keeps the whole area clickable for the right-click menu.
                 g.Clear(Color.FromArgb(1, 0, 0, 0));

@@ -58,7 +58,7 @@ namespace XingyaoPerf
         readonly Overlay overlay = new Overlay();
         readonly ContextMenuStrip menu = new ContextMenuStrip();
         readonly ToolStripMenuItem[] modeItems = new ToolStripMenuItem[4];
-        readonly ToolStripMenuItem overlayItem, startupItem;
+        readonly ToolStripMenuItem overlayItem, weatherItem, startupItem;
         readonly System.Windows.Forms.Timer timer = new System.Windows.Forms.Timer { Interval = 500 };
         readonly SynchronizationContext ui;
         IntPtr iconHandle;
@@ -76,8 +76,11 @@ namespace XingyaoPerf
             }
             menu.Items.Add(new ToolStripSeparator());
             overlayItem = new ToolStripMenuItem("在任务栏显示监控", null, (s, e) => ToggleOverlay()) { Checked = settings.Overlay };
+            weatherItem = new ToolStripMenuItem("避让天气", null, (s, e) => ToggleWeather()) { Checked = settings.AvoidWeather };
+            overlay.AvoidWeather = settings.AvoidWeather;
             startupItem = new ToolStripMenuItem("开机自动启动", null, (s, e) => ToggleStartup());
             menu.Items.Add(overlayItem);
+            menu.Items.Add(weatherItem);
             menu.Items.Add(startupItem);
             menu.Items.Add(new ToolStripSeparator());
             menu.Items.Add("退出", null, (s, e) => Quit());
@@ -135,6 +138,14 @@ namespace XingyaoPerf
         {
             settings.Overlay = !settings.Overlay;
             overlayItem.Checked = settings.Overlay;
+            settings.Save();
+        }
+
+        void ToggleWeather()
+        {
+            settings.AvoidWeather = !settings.AvoidWeather;
+            weatherItem.Checked = settings.AvoidWeather;
+            overlay.AvoidWeather = settings.AvoidWeather;
             settings.Save();
         }
 
