@@ -10,8 +10,10 @@ using Microsoft.Win32;
 
 namespace XingyaoPerf
 {
-    // A small per-pixel-alpha window that sits on the taskbar, just left of the tray.
-    // Windows 11 has no taskbar widget API, so this floats above the taskbar rather than inside it.
+    // A small per-pixel-alpha window on the taskbar, just left of the tray.
+    // Windows 11 has no taskbar widget API. A topmost window gets covered when Start opens, because the shell
+    // raises the taskbar above the topmost band, so this becomes a child of the taskbar window.
+    // If that fails it stays a floating topmost window.
     //
     //   CPU | 45% | P 4.2 | E 3.8 | L 2.1 | 39.9 W |       | 6506 rpm
     //   GPU | 80% |     2.10 GHz          | 22.4 W | 69 °C | 6282 rpm
@@ -19,10 +21,11 @@ namespace XingyaoPerf
     // Usage, frequency and power line up in columns. CPU and GPU share one package, so the
     // temperature spans both rows. The two fans are stacked but not tied to a row,
     // because which fan cools which part is not known.
-    internal sealed class Overlay : Form
+    // This uses NativeWindow rather than Form, because Form resets the parent of its window after creating it.
+    internal sealed class Overlay : NativeWindow, IDisposable
     {
         const int WS_EX_LAYERED = 0x80000, WS_EX_TOOLWINDOW = 0x80, WS_EX_NOACTIVATE = 0x8000000, WS_EX_TOPMOST = 0x8;
-        const int WM_MOUSEACTIVATE = 0x21, MA_NOACTIVATE = 3;
+        const int WM_MOUSEACTIVATE = 0x21, MA_NOACTIVATE = 3, WM_RBUTTONUP = 0x205;
 
         // Layout in pixels for a 60 px tall taskbar, scaled to the real height.
         const float RowH = 26, RowGap = 3, Radius = 3, LabelW = 40, PctW = 60, FreqW = 68, InnerGap = 3, PowerW = 76, TempW = 66, FanW = 92, ColGap = 8;
@@ -38,29 +41,56 @@ namespace XingyaoPerf
         bool lastLight;
         Font font;
         string drawn;
+        IntPtr embeddedIn;
+        bool embedFailed, shown;
 
-        public Overlay()
-        {
-            FormBorderStyle = FormBorderStyle.None;
-            ShowInTaskbar = false;
-            StartPosition = FormStartPosition.Manual;
-            Text = "xingyao-perf";
-        }
+        public event Action RightClick;
+        public bool Visible { get { return shown; } }
 
-        protected override bool ShowWithoutActivation { get { return true; } }
-        protected override CreateParams CreateParams
-        {
-            get
-            {
-                var c = base.CreateParams;
-                c.ExStyle |= WS_EX_LAYERED | WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE | WS_EX_TOPMOST;
-                return c;
-            }
-        }
         protected override void WndProc(ref Message m)
         {
             if (m.Msg == WM_MOUSEACTIVATE) { m.Result = (IntPtr)MA_NOACTIVATE; return; }
+            if (m.Msg == WM_RBUTTONUP) { var h = RightClick; if (h != null) h(); return; }
             base.WndProc(ref m);
+        }
+
+        public void Hide()
+        {
+            if (Handle != IntPtr.Zero) Native.ShowWindow(Handle, Native.SW_HIDE);
+            shown = false;
+        }
+
+        static CreateParams ParamsFor(IntPtr parent)
+        {
+            var c = new CreateParams { Caption = "xingyao-perf", Width = 1, Height = 1 };
+            c.ExStyle = WS_EX_LAYERED | WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE;
+            if (parent != IntPtr.Zero) { c.Parent = parent; c.Style = Native.WS_CHILD; }
+            else { c.Style = Native.WS_POPUP; c.ExStyle |= WS_EX_TOPMOST; }
+            return c;
+        }
+
+        // Runs on first use and after an Explorer restart, which destroys this child window along with the taskbar.
+        void Create(IntPtr bar)
+        {
+            if (Handle != IntPtr.Zero) DestroyHandle();
+            shown = false;
+            drawn = null;
+            embeddedIn = IntPtr.Zero;
+            if (!embedFailed)
+            {
+                string problem;
+                try
+                {
+                    CreateHandle(ParamsFor(bar));
+                    if (Native.GetParent(Handle) == bar) { embeddedIn = bar; return; }
+                    problem = "parent not set";
+                }
+                catch (Exception e) { problem = e.Message; }
+                Log.Write("taskbar embed failed (" + problem + "), using a floating window");
+                embedFailed = true;
+                if (Handle != IntPtr.Zero) DestroyHandle();
+            }
+            CreateHandle(ParamsFor(IntPtr.Zero));
         }
 
         public static string Num(double v, string fmt) { return double.IsNaN(v) ? "--" : v.ToString(fmt, CultureInfo.InvariantCulture); }
@@ -108,11 +138,20 @@ namespace XingyaoPerf
                 width = WidthFor(h);
                 lastH = h; lastLight = light; drawn = null;
             }
+            if (Handle == IntPtr.Zero || (!embedFailed && embeddedIn != bar)) Create(bar);
+            if (!shown) { Native.ShowWindow(Handle, Native.SW_SHOWNA); shown = true; drawn = null; }
+
             int x = right - width - 8, y = r.Top;
+            if (embeddedIn != IntPtr.Zero)
+            {
+                x -= r.Left; y -= r.Top; // Child positions are relative to the taskbar.
+                if (x != lastX || y != lastY || drawn == null)
+                    Native.SetWindowPos(Handle, IntPtr.Zero, x, y, width, h, Native.SWP_NOACTIVATE | Native.SWP_SHOWWINDOW);
+            }
             if (x != lastX || y != lastY) { lastX = x; lastY = y; drawn = null; }
-            if (!Visible) { Show(); drawn = null; }
             Redraw();
-            Native.SetWindowPos(Handle, Native.HWND_TOPMOST, 0, 0, 0, 0, Native.SWP_NOMOVE | Native.SWP_NOSIZE | Native.SWP_NOACTIVATE);
+            if (embeddedIn == IntPtr.Zero)
+                Native.SetWindowPos(Handle, Native.HWND_TOPMOST, 0, 0, 0, 0, Native.SWP_NOMOVE | Native.SWP_NOSIZE | Native.SWP_NOACTIVATE);
         }
 
         public static Font MakeFont(int h) { return new Font("Segoe UI", Math.Max(9f, h * 0.27f), FontStyle.Regular, GraphicsUnit.Pixel); }
@@ -215,7 +254,7 @@ namespace XingyaoPerf
 
         void Redraw()
         {
-            if (font == null || !IsHandleCreated || !Visible) return;
+            if (font == null || Handle == IntPtr.Zero || !shown) return;
             string key = Key(values);
             if (key == drawn) return;
             drawn = key;
@@ -229,7 +268,8 @@ namespace XingyaoPerf
                     var size = new Native.SIZE(width, lastH);
                     var src = new Native.POINT(0, 0);
                     var blend = new Native.BLENDFUNCTION { Op = 0, Flags = 0, Alpha = 255, Format = 1 };
-                    Native.UpdateLayeredWindow(Handle, screen, ref pos, ref size, mem, ref src, 0, ref blend, 2);
+                    if (embeddedIn != IntPtr.Zero) Native.UpdateLayeredChild(Handle, screen, IntPtr.Zero, ref size, mem, ref src, 0, ref blend, 2);
+                    else Native.UpdateLayeredWindow(Handle, screen, ref pos, ref size, mem, ref src, 0, ref blend, 2);
                 }
                 finally
                 {
@@ -241,10 +281,10 @@ namespace XingyaoPerf
             }
         }
 
-        protected override void Dispose(bool disposing)
+        public void Dispose()
         {
-            if (disposing && font != null) font.Dispose();
-            base.Dispose(disposing);
+            if (font != null) font.Dispose();
+            if (Handle != IntPtr.Zero) DestroyHandle();
         }
     }
 

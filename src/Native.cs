@@ -23,13 +23,18 @@ namespace XingyaoPerf
         [DllImport("user32.dll")] public static extern IntPtr GetDC(IntPtr h);
         [DllImport("user32.dll")] public static extern int ReleaseDC(IntPtr h, IntPtr dc);
         [DllImport("user32.dll")] public static extern bool UpdateLayeredWindow(IntPtr h, IntPtr dst, ref POINT pos, ref SIZE size, IntPtr src, ref POINT srcPos, int key, ref BLENDFUNCTION blend, int flags);
+        [DllImport("user32.dll", EntryPoint = "UpdateLayeredWindow")] public static extern bool UpdateLayeredChild(IntPtr h, IntPtr dst, IntPtr pos, ref SIZE size, IntPtr src, ref POINT srcPos, int key, ref BLENDFUNCTION blend, int flags);
+        [DllImport("user32.dll")] public static extern IntPtr GetParent(IntPtr h);
+        [DllImport("user32.dll")] public static extern bool ShowWindow(IntPtr h, int cmd);
+        public const int SW_HIDE = 0, SW_SHOWNA = 8;
         [DllImport("gdi32.dll")] public static extern IntPtr CreateCompatibleDC(IntPtr dc);
         [DllImport("gdi32.dll")] public static extern bool DeleteDC(IntPtr dc);
         [DllImport("gdi32.dll")] public static extern IntPtr SelectObject(IntPtr dc, IntPtr obj);
         [DllImport("gdi32.dll")] public static extern bool DeleteObject(IntPtr obj);
 
         public static readonly IntPtr HWND_TOPMOST = new IntPtr(-1);
-        public const uint SWP_NOSIZE = 0x1, SWP_NOMOVE = 0x2, SWP_NOACTIVATE = 0x10;
+        public const uint SWP_NOSIZE = 0x1, SWP_NOMOVE = 0x2, SWP_NOACTIVATE = 0x10, SWP_SHOWWINDOW = 0x40;
+        public const int WS_CHILD = 0x40000000, WS_POPUP = unchecked((int)0x80000000);
 
         // --- performance counters ---
         [StructLayout(LayoutKind.Sequential)] public struct PDH_VALUE { public uint Status; public double Value; }

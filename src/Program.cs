@@ -84,7 +84,7 @@ namespace XingyaoPerf
             menu.Opening += (s, e) => startupItem.Checked = Startup.Enabled;
 
             tray.ContextMenuStrip = menu;
-            overlay.MouseUp += (s, e) => { if (e.Button == MouseButtons.Right) menu.Show(Cursor.Position); };
+            overlay.RightClick += () => menu.Show(Cursor.Position);
             ShowMode(0);
             tray.Visible = true;
 
@@ -193,7 +193,8 @@ namespace XingyaoPerf
             }
 
             bool created;
-            using (var single = new Mutex(true, @"Local\xingyao-perf-single", out created))
+            // A --no-elevate test run may sit beside the installed instance.
+            using (var single = new Mutex(true, noElevate ? @"Local\xingyao-perf-test" : @"Local\xingyao-perf-single", out created))
             {
                 if (!created) return 0;
                 Application.EnableVisualStyles();
