@@ -43,9 +43,30 @@ CPU + 核显同时满载（`thermal-test.ps1 -Load both`，每档 150 秒，持�
 
 结论：直连切换到性能模式有效。持续功耗高约 6 W，温度远未到上限，`Performance Limit Flags` 全程为 0。只跑 CPU 测不出差别，可能是 CPU 频率先到顶，这点尚未证实。
 
+## 电池供电下的双烤（2026-11-09）
+
+`thermal-test.ps1 -Mode office,balanced,turbo -Load both -OnBattery -CoolSeconds 45 -LoadSeconds 240`，官方后台已停用，开着 GamePP，每档只跑一次，顺序固定。结果在 `scripts/thermal-result-office-balanced-turbo-both-battery.txt`。
+
+| 模式 | 高功耗阶段 | 持续封装 W（约 60–160 秒） | 持续电池 W（约 60–160 秒） | 最后 30 秒封装 W | 峰值 °C | 持续风扇 RPM |
+|---|---|---:|---:|---:|---:|---:|
+| 办公 | 约 33 W，约 50 秒 | 约 21 | 约 28 | 25.3 | 72 | 4900 / 4711 |
+| 平衡 | 约 33 W，约 45 秒 | 约 22 | 约 29 | 22.6 | 66 | 4692 / 4485 |
+| 性能 | 约 33 W，约 45 秒 | 约 23 | 约 31 | 23.0 | 66 | 4701 / 4488 |
+
+三档差别很小，远小于插电时（持续 22.0 / 33.8 / 39.9 W）。电池放电峰值约 42 W。持续阶段只有 55–57°C，`Performance Limit Flags` 全程为 0，所以限制不是温度造成的，很可能是电池供电的功耗上限，具体限制来源未查明。办公模式在约 167 秒后从 21 W 升到 25–26 W，原因未查明，因此它的最后 30 秒数据偏高。
+
+## 停用官方后台后的验证（2026-11-09）
+
+`vendor-service.ps1 -Action disable` 后：
+
+- 用户确认正常：模式切换、监控数值、Fn 键、睡眠唤醒后模式保持。
+- 完整重启（启动类型 0x0）后，由日志和状态确认：`GCUBridge` 保持停用，`GCUService` 和托盘未运行；登录任务启动了程序，保存的模式未变（办公），没有恢复或改动记录，风扇和 GPU 没有错误记录。
+- 重启时温度读取首次报 `Invalid object`（程序启动后约 5 秒）。程序暂停 60 秒后重试，之后没有再报错。
+- 充电阈值读数在停用前、停用后、重启后都是 `enabled=0, lower=0, upper=0`。
+
 待验证：
 
-- 停用官方服务后的重启、睡眠唤醒和 Fn 键行为。
+- 放电后回充时停在哪里。接显示器的 USB-C 供电也可能影响结果。
 
 ## 风扇（PM2 端口）
 
@@ -70,6 +91,31 @@ CPU + 核显同时满载（`thermal-test.ps1 -Load both`，每档 150 秒，持�
 - 手动 PWM 绕过 EC 的温度曲线。进程崩溃时不保证恢复自动，需要自己做保护。
 - 互斥锁 `Local\MechrevoPtlFanDiagnostic` 只协调遵守它的程序，官方软件不遵守。
 - 该项目文档称三档各有独立风扇曲线，最高目标分别约 4900/4700、6500/6300、7100/7000 RPM。
+
+## 电池充电上限（未在本机验证）
+
+本机只发送过读取命令，写入命令没有发送过，不能直接使用。
+
+本机读取记录（BIOS 1.01，官方服务运行中，`HealthProtectionStatus=1`），2026-11-09：`enabled=0, lower=0, upper=0`，电量 97%，插电，未充电，充电功率 0。三条命令都有返回，握手正常。全 0 与 open-revo 写入的“关闭”状态相同，但也可能表示这组命令在 1.01 上没有实际作用，尚未区分。这次读数也说明，此时的未充电不是这组阈值造成的，原因未查明。
+
+来源：[clmslgs/open-revo](https://github.com/clmslgs/open-revo) `ptl_pmc.rs`，提交 948ca76（PR #166）。该 PR 只验证了 BIOS 1.00，页面没有写是否测过重启后保持。端口和 PM2 风扇相同。
+
+| 操作 | 命令 | 参数 | 返回 |
+|---|---|---|---|
+| 读启用标志 | `F1` | `12` | 0 或 1 |
+| 读下阈值（停止充电） | `F1` | `13` | 百分比 |
+| 读上阈值（主动放电） | `F1` | `14` | 百分比 |
+| 关闭 / 启用 | `F1` | `10` / `11` | 无 |
+| 设下阈值 | `F2` | 百分比 | 回显 |
+| 设上阈值 | `F3` | 百分比 | 回显 |
+
+open-revo 的写入顺序：关闭 → 设上阈值 → 设下阈值 → 启用 → 回读，失败时写回原状态。60% 和 80% 写成 `enabled=1, lower=限制值, upper=100`。100% 写成 `enabled=0, lower=0, upper=0`，而它的文档和注释都说上阈值保持 100%，两者不一致，写 0 的影响未知。
+
+官方服务里的线索：`BatteryProtection2`（本机日志显示启用的是它）有上下限读写方法，并响应电量变化和电源事件，方法体被混淆，看不出是否在后台维持设置。`Define.ECSpec` 里有 `ADDR_BATTERY_CHARGE_LIMIT_UP = 0x7B9` 和 `DOWN = 0x7D0`。注册表 `HKLM\SOFTWARE\OEM\GamingCenter2\BatteryProtection2` 的 `HealthProtectionStatus` 当前为 1，枚举为 0 性能、1 平衡、2 健康。
+
+不要用于本机的方案：[Leo-stro/mechrevo-charge-limit](https://github.com/Leo-stro/mechrevo-charge-limit) 的 EC 写入序列（`0x07B9`、`0x07C3`）。它只在无界15X 上测过，其 README 也说明不适用于星耀14 STX。
+
+只读探测：`scripts/battery-read.ps1 -Label <名称>`，只能发送 `F1 12/13/14`，结果追加到 `%LOCALAPPDATA%\xingyao-perf\battery-read.log`。
 
 ## 已知行为
 

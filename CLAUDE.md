@@ -14,16 +14,16 @@ Protocol details and test results are in `docs/protocol.md`.
 
 Done and confirmed by the user on the taskbar: three modes, monitoring bars, embedded overlay that survives opening Start.
 
-Not yet confirmed by the user: reboot auto-start and mode restore, fullscreen hide, Explorer restart recovery.
+Reboot auto-start and kept mode are confirmed from logs; the user has not yet confirmed the values on the taskbar after reboot. Not yet confirmed by the user: fullscreen hide, Explorer restart recovery.
 
-## Next step: try running without the official background
+## Running without the official background
 
-Use `scripts/vendor-service.ps1` (`-Action status|disable|restore`). The user runs `disable`, then check:
+The official background is currently disabled on this machine with `scripts/vendor-service.ps1` (`-Action status|disable|restore`). Mode switching, monitoring, Fn keys, sleep and wake, and reboot all passed; see `docs/protocol.md`.
 
-1. Mode switching and all monitoring values still work.
-2. After a reboot: app auto-starts, chosen mode is kept, and temperature, fans and GPU values still read.
-3. After sleep and wake: the chosen mode is kept.
-4. Fn keys: mode key, brightness, volume, keyboard backlight, touchpad toggle.
-5. Which official features are lost, such as battery charge protection.
+Still open: charging. The user's monitor powers the laptop over USB-C, so unplugging also loses the display. When the battery has dropped to about 85-90% from normal use, recharge on the monitor cable, then run `scripts/battery-read.ps1 -Label after-recharge`. If it stops early, repeat with the original adapter.
 
-If anything needed is lost, run `restore`. Do not suggest uninstalling the official software until these pass. An uninstall might also remove `inpoutx64`, which fan reading needs, so check that first.
+If anything needed is lost, run `restore`. Do not suggest uninstalling the official software until this passes. An uninstall might also remove `inpoutx64`, which fan reading needs, so check that first.
+
+## Next feature: battery charge limit
+
+Thresholds read `enabled=0, lower=0, upper=0` with `battery-read.ps1`. Write commands have never been sent here, and BIOS 1.01 is unverified for them. Tell the user the exact commands before a single test write. Testing also needs the battery below the limit, so it waits for the same discharge.

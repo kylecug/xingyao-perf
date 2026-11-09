@@ -5,9 +5,12 @@
 # Port protocol from Kurisu934/FanControl.MechrevoPtl (MIT), validated there on P916F-PTL BIOS 1.01.
 #   -Load cpu|gpu|both   : which load to run (default cpu). GPU load uses the system OpenCL runtime.
 #   -GpuSmokeSeconds N   : run only the GPU load for N seconds and print power; needs no admin, writes nothing
-param([string[]]$Mode = @('balanced', 'turbo'), [ValidateSet('cpu', 'gpu', 'both')][string]$Load = 'cpu', [int]$CoolSeconds = 120, [int]$LoadSeconds = 150, [int]$SampleSeconds = 5, [int]$GpuSmokeSeconds = 0)
+#   -OnBattery           : require battery power; stops if AC returns, battery reaches -MinBatteryPercent, or temperature reaches -MaxTempC
+# The system and display stay awake while it runs, without changing power settings. Closing the lid can still sleep.
+param([string[]]$Mode = @('balanced', 'turbo'), [ValidateSet('cpu', 'gpu', 'both')][string]$Load = 'cpu', [int]$CoolSeconds = 120, [int]$LoadSeconds = 150, [int]$SampleSeconds = 5, [int]$GpuSmokeSeconds = 0, [switch]$OnBattery, [int]$MinBatteryPercent = 20, [int]$MaxTempC = 95)
 $ErrorActionPreference = 'Stop'
 $tag = ($Mode -join '-') + "-$Load"
+if ($OnBattery) { $tag += '-battery' }
 if ($GpuSmokeSeconds -gt 0) { $tag = 'gpu-smoke' }
 Start-Transcript -Path (Join-Path $PSScriptRoot "thermal-result-$tag.txt") -Force | Out-Null
 
@@ -15,7 +18,7 @@ Add-Type -TypeDefinition @'
 using System; using System.Threading; using System.Runtime.InteropServices; using Microsoft.Win32.SafeHandles;
 public static class CpuLoad {
     [DllImport("kernel32.dll")] public static extern uint SetThreadExecutionState(uint flags);
-    public static uint KeepAwake() { return SetThreadExecutionState(0x80000001u); }
+    public static uint KeepAwake() { return SetThreadExecutionState(0x80000003u); }
     public static uint AllowSleep() { return SetThreadExecutionState(0x80000000u); }
     static volatile bool run; static long[] counts; static Thread[] ts;
     public static void Start(int n) {
@@ -166,12 +169,32 @@ function Read-Ec {
     catch { $script:fanFailures++; return 'err,err,err' }
 }
 function Sample-Line($phase, $t) {
-    $s = (Get-Counter '\Energy Meter(rapl_package0_pkg)\Power', '\Energy Meter(rapl_package0_pp1)\Power', '\Processor Information(_Total)\Actual Frequency', '\Processor Information(_Total)\Performance Limit Flags' -ErrorAction Stop).CounterSamples
+    $s = (Get-Counter '\Energy Meter(rapl_package0_pkg)\Power', '\Energy Meter(rapl_package0_pp1)\Power', '\Processor Information(_Total)\Actual Frequency', '\Processor Information(_Total)\Performance Limit Flags', '\Processor Information(0,*)\Actual Frequency' -ErrorAction Stop).CounterSamples
     $w = [double]($s | Where-Object { $_.Path -match 'package0_pkg' }).CookedValue / 1000
     $gw = [double]($s | Where-Object { $_.Path -match 'package0_pp1' }).CookedValue / 1000
-    $f = [double]($s | Where-Object { $_.Path -match 'actual frequency' }).CookedValue
+    $f = [double]($s | Where-Object { $_.Path -match '\(_total\)\\actual frequency' }).CookedValue
     $l = [double]($s | Where-Object { $_.Path -match 'limit flags' }).CookedValue
-    [pscustomobject]@{ Phase = $phase; T = [int]$t; Watts = [math]::Round($w, 1); GpuW = [math]::Round($gw, 1); MHz = [math]::Round($f); TempC = (Read-Temp); LimitFlags = [int]$l; Ec = (Read-Ec) }
+    $core = @{}
+    foreach ($c in $s) { if ($c.Path -match '\(0,(\d+)\)\\actual frequency') { $core[[int]$Matches[1]] = [double]$c.CookedValue } }
+    $b = Get-CimInstance -Namespace root\wmi -ClassName BatteryStatus | Select-Object -First 1
+    [pscustomobject]@{
+        Phase = $phase; T = [int]$t; Watts = [math]::Round($w, 1); GpuW = [math]::Round($gw, 1); MHz = [math]::Round($f); TempC = (Read-Temp); LimitFlags = [int]$l; Ec = (Read-Ec)
+        PMHz = (Core-Avg $core 0 3); EMHz = (Core-Avg $core 4 11); LMHz = (Core-Avg $core 12 15)
+        Ac = [bool]$b.PowerOnline; BattW = [math]::Round([double]$b.DischargeRate / 1000, 1); BattMWh = [int]$b.RemainingCapacity; BattPct = [int](Get-CimInstance Win32_Battery | Select-Object -First 1).EstimatedChargeRemaining
+    }
+}
+function Core-Avg($core, $from, $to) {
+    $x = @($from..$to | Where-Object { $core.ContainsKey($_) } | ForEach-Object { $core[$_] })
+    if ($x.Count) { return [math]::Round(($x | Measure-Object -Average).Average) }
+    return -1
+}
+function Check-Safe($r) {
+    if ($r.TempC -ge $MaxTempC) { throw "temperature $($r.TempC) C reached the limit $MaxTempC C" }
+    if ($OnBattery -and $r.Ac) { throw 'AC power came back, so the battery run stopped' }
+    if ($OnBattery -and $r.BattPct -le $MinBatteryPercent) { throw "battery $($r.BattPct)% reached the limit $MinBatteryPercent%" }
+}
+function Show-Line($r) {
+    Write-Host "$($r.Phase) t=$($r.T) pkg=$($r.Watts)W gpu=$($r.GpuW)W batt=$($r.BattW)W $($r.BattPct)% $($r.MHz)MHz P=$($r.PMHz) E=$($r.EMHz) L=$($r.LMHz) $($r.TempC)C flags=$($r.LimitFlags) ec=$($r.Ec)"
 }
 function Avg($rows, $prop, $from) {
     $x = @($rows | Where-Object { $_.T -ge $from -and $_.$prop -ge 0 } | ForEach-Object { $_.$prop })
@@ -188,7 +211,7 @@ function Run-One($label) {
     Write-Host "--- $label : idle $CoolSeconds s ---"
     $sw = [Diagnostics.Stopwatch]::StartNew(); $next = 0
     while ($sw.Elapsed.TotalSeconds -lt $CoolSeconds) {
-        if ($sw.Elapsed.TotalSeconds -ge $next) { Sample-Line 'idle' $sw.Elapsed.TotalSeconds | ForEach-Object { Write-Host "$($_.Phase) t=$($_.T) pkg=$($_.Watts)W gpu=$($_.GpuW)W $($_.MHz)MHz $($_.TempC)C flags=$($_.LimitFlags) ec=$($_.Ec)" }; $next += 30 }
+        if ($sw.Elapsed.TotalSeconds -ge $next) { $r = Sample-Line 'idle' $sw.Elapsed.TotalSeconds; Show-Line $r; Check-Safe $r; $next += 30 }
         Start-Sleep -Seconds 1
     }
     Write-Host "--- $label : load $LoadSeconds s ---"
@@ -200,17 +223,22 @@ function Run-One($label) {
         while ($sw.Elapsed.TotalSeconds -lt $LoadSeconds) {
             $r = Sample-Line 'load' $sw.Elapsed.TotalSeconds
             $rows += $r
-            Write-Host "load t=$($r.T) pkg=$($r.Watts)W gpu=$($r.GpuW)W $($r.MHz)MHz $($r.TempC)C flags=$($r.LimitFlags) ec=$($r.Ec)"
+            Show-Line $r
+            Check-Safe $r
             if ($t0 -eq 0 -and $sw.Elapsed.TotalSeconds -ge $from) { $c0 = [CpuLoad]::Total(); $g0 = [GpuLoad]::Total(); $t0 = $sw.Elapsed.TotalSeconds }
             Start-Sleep -Seconds $SampleSeconds
         }
         $c1 = [CpuLoad]::Total(); $g1 = [GpuLoad]::Total(); $t1 = $sw.Elapsed.TotalSeconds
         if ([GpuLoad]::Error()) { Write-Host "GPU LOAD ERROR: $([GpuLoad]::Error())" }
     } finally { [CpuLoad]::Stop(); [GpuLoad]::Stop() }
+    $usedWh = [math]::Round(($rows[0].BattMWh - $rows[-1].BattMWh) / 1000, 2)
     [pscustomobject]@{
         Run = $label; Wmi = $names[(Read-Mode)]
         PeakW = ($rows | ForEach-Object { $_.Watts } | Measure-Object -Maximum).Maximum
-        SustW = (Avg $rows 'Watts' $from); SustGpuW = (Avg $rows 'GpuW' $from); SustMHz = (Avg $rows 'MHz' $from)
+        SustW = (Avg $rows 'Watts' $from); SustGpuW = (Avg $rows 'GpuW' $from); SustBattW = (Avg $rows 'BattW' $from); PeakBattW = ($rows | ForEach-Object { $_.BattW } | Measure-Object -Maximum).Maximum
+        UsedWh = $usedWh; CpuWorkPerWh = if ($usedWh -gt 0) { [math]::Round($c1 / $usedWh) } else { -1 }; GpuWorkPerWh = if ($usedWh -gt 0) { [math]::Round($g1 / $usedWh) } else { -1 }
+        SustMHz = (Avg $rows 'MHz' $from); SustP = (Avg $rows 'PMHz' $from); SustE = (Avg $rows 'EMHz' $from); SustL = (Avg $rows 'LMHz' $from)
+        MaxFlags = ($rows | ForEach-Object { $_.LimitFlags } | Measure-Object -Maximum).Maximum
         PeakC = ($rows | ForEach-Object { $_.TempC } | Measure-Object -Maximum).Maximum; SustC = (Avg $rows 'TempC' $from)
         Fan0 = (Fan-Avg $rows 1 $from); Fan1 = (Fan-Avg $rows 2 $from)
         Score = if ($t1 -gt $t0) { [math]::Round(($c1 - $c0) / ($t1 - $t0)) } else { -1 }
@@ -240,7 +268,8 @@ try {
     Add-Type -AssemblyName System.Windows.Forms
     $line = [System.Windows.Forms.SystemInformation]::PowerStatus.PowerLineStatus
     "Power line: $line"
-    if ($line -ne 'Online') { "STOP: plug in AC power first."; return }
+    if ($OnBattery -and $line -ne 'Offline') { "STOP: unplug AC power first."; return }
+    if (-not $OnBattery -and $line -ne 'Online') { "STOP: plug in AC power first."; return }
 
     $script:inst = @(Get-CimInstance -Namespace root\WMI -ClassName OemWMIMethod)[0]
     $original = Read-Mode
@@ -268,6 +297,6 @@ try {
     }
     [void][CpuLoad]::AllowSleep()
     if ($script:ec) { $script:ec.Dispose() }
-    if ($results) { "=== SUMMARY ==="; $results | Format-Table -Property * -AutoSize | Out-String -Width 200 | Write-Output }
+    if ($results) { "=== SUMMARY ==="; $results | Format-List -Property * | Out-String -Width 200 | Write-Output }
     Stop-Transcript | Out-Null
 }
