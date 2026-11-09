@@ -206,9 +206,11 @@ namespace XingyaoPerf
             return r.Top < b.Bottom - 4 && r.Bottom > b.Top + 4;
         }
 
-        static bool ForegroundIsFullscreen()
+        static bool ForegroundIsFullscreen() { return IsFullscreen(Native.GetForegroundWindow()); }
+
+        // True for a window that covers its whole monitor, other than the desktop and the shell.
+        public static bool IsFullscreen(IntPtr f)
         {
-            IntPtr f = Native.GetForegroundWindow();
             Native.RECT r;
             if (f == IntPtr.Zero || !Native.GetWindowRect(f, out r)) return false;
             var sb = new StringBuilder(64);

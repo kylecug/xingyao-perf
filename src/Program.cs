@@ -56,6 +56,14 @@ namespace XingyaoPerf
         readonly Monitor monitor;
         readonly NotifyIcon tray = new NotifyIcon();
         readonly Overlay overlay = new Overlay();
+        readonly GameOverlay game = new GameOverlay();
+        readonly ToolStripMenuItem[] gameItems = new ToolStripMenuItem[3];
+        static readonly int[] CpuStates = { 100, 99, 80, 70 };
+        static readonly string[] CpuStateNames = { "不限制", "关闭睿频（约 1.8 GHz）", "约 1.5 GHz", "约 1.3 GHz" };
+        static readonly int[] GpuCaps = { 0, 2000, 1600, 1200, 900 };
+        static readonly int[] FanLevels = { 0, 100, 70, 50, 30 };
+        readonly ToolStripMenuItem fanMenu = new ToolStripMenuItem("风扇");
+        readonly ToolStripMenuItem cpuMenu = new ToolStripMenuItem("CPU 最高频率"), gpuMenu = new ToolStripMenuItem("GPU 最高频率");
         readonly ContextMenuStrip menu = new ContextMenuStrip();
         readonly ToolStripMenuItem[] modeItems = new ToolStripMenuItem[4];
         readonly ToolStripMenuItem overlayItem, weatherItem, startupItem;
@@ -67,7 +75,7 @@ namespace XingyaoPerf
         readonly System.Windows.Forms.Timer timer = new System.Windows.Forms.Timer { Interval = 500 };
         readonly SynchronizationContext ui;
         IntPtr iconHandle;
-        Snapshot shown;
+        Snapshot shown, gameShown;
 
         public TrayApp()
         {
@@ -102,15 +110,51 @@ namespace XingyaoPerf
                 chargeMenu.DropDownItems.Add(chargeItems[i]);
             }
             startupItem = new ToolStripMenuItem("开机自动启动", null, (s, e) => ToggleStartup());
+            for (int i = 0; i < CpuStates.Length; i++)
+            {
+                int percent = CpuStates[i];
+                cpuMenu.DropDownItems.Add(new ToolStripMenuItem(CpuStateNames[i], null, (s, e) => PickCpuCap(percent)) { Tag = percent });
+            }
+            for (int i = 0; i < GpuCaps.Length; i++)
+            {
+                int mhz = GpuCaps[i];
+                gpuMenu.DropDownItems.Add(new ToolStripMenuItem(mhz == 0 ? "不限制" : (mhz / 1000.0).ToString("0.0") + " GHz", null, (s, e) => PickGpuCap(mhz)) { Tag = mhz });
+            }
+            cpuMenu.DropDownOpening += (s, e) => RefreshCaps();
+            gpuMenu.DropDownOpening += (s, e) => RefreshCaps();
+            RefreshCaps();
+            for (int i = 0; i < FanLevels.Length; i++)
+            {
+                int level = FanLevels[i];
+                fanMenu.DropDownItems.Add(new ToolStripMenuItem(level == 0 ? "自动（EC 曲线）" : level == 100 ? "全速 100%" : level + "%", null, (s, e) => PickFan(level)) { Tag = level });
+            }
+            fanMenu.Enabled = Platform.FanReadAllowed;
+            fanMenu.DropDownOpening += (s, e) => Check(fanMenu, monitor.FanPercent);
+            Check(fanMenu, 0);
+            monitor.FanReleased += why => ui.Post(_ => { Check(fanMenu, 0); tray.ShowBalloonTip(5000, "风扇已恢复自动", "原因：" + why, ToolTipIcon.Warning); }, null);
+            Microsoft.Win32.SystemEvents.PowerModeChanged += (s, e) => { if (e.Mode == Microsoft.Win32.PowerModes.Suspend) monitor.OnSuspend(); };
+            menu.Items.Add(fanMenu);
+            menu.Items.Add(cpuMenu);
+            menu.Items.Add(gpuMenu);
             menu.Items.Add(chargeMenu);
             menu.Items.Add(new ToolStripSeparator());
+            var gameMenu = new ToolStripMenuItem("游戏和全屏时显示监控");
+            string[] gameNames = { "关闭", "仅游戏（英雄联盟）", "所有全屏程序和游戏" };
+            for (int i = 0; i < 3; i++)
+            {
+                int when = i;
+                gameItems[i] = new ToolStripMenuItem(gameNames[i], null, (s, e) => PickGame(when)) { Checked = settings.GameOverlay == i };
+                gameMenu.DropDownItems.Add(gameItems[i]);
+            }
+            game.SetGames(settings.Games.Split(new[] { '|' }, StringSplitOptions.RemoveEmptyEntries));
             menu.Items.Add(overlayItem);
+            menu.Items.Add(gameMenu);
             menu.Items.Add(layoutMenu);
             menu.Items.Add(weatherItem);
             menu.Items.Add(startupItem);
             menu.Items.Add(new ToolStripSeparator());
             menu.Items.Add("退出", null, (s, e) => Quit());
-            menu.Opening += (s, e) => { startupItem.Checked = Startup.Enabled; RefreshCharge(); };
+            menu.Opening += (s, e) => { startupItem.Checked = Startup.Enabled; RefreshCharge(); RefreshCaps(); };
 
             tray.ContextMenuStrip = menu;
             // Left click opens the same menu as right click. NotifyIcon only has a private method that
@@ -145,6 +189,9 @@ namespace XingyaoPerf
                 tray.Visible = true;
                 trayTaskbar = bar;
             }
+            var latest = monitor.Latest;
+            if (latest != gameShown) { gameShown = latest; game.SetValues(latest); }
+            game.Track(settings.GameOverlay);
             if (!settings.Overlay) { if (overlay.Visible) overlay.Hide(); return; }
             var s = monitor.Latest;
             if (s != shown) { shown = s; overlay.SetValues(s); }
@@ -182,6 +229,56 @@ namespace XingyaoPerf
             settings.Overlay = !settings.Overlay;
             overlayItem.Checked = settings.Overlay;
             settings.Save();
+        }
+
+        static void Check(ToolStripMenuItem parent, int value)
+        {
+            foreach (ToolStripMenuItem i in parent.DropDownItems) i.Checked = (int)i.Tag == value;
+        }
+
+        void RefreshCaps()
+        {
+            // Show the user's choice. The power plan value itself is rewritten by other software (see docs/protocol.md).
+            Check(cpuMenu, settings.CpuState);
+            gpuMenu.Enabled = monitor.GpuCapAvailable;
+            foreach (ToolStripMenuItem i in gpuMenu.DropDownItems) i.Visible = (int)i.Tag == 0 || (int)i.Tag < monitor.GpuHwMaxMhz;
+            Check(gpuMenu, settings.GpuMaxMhz);
+        }
+
+        void PickCpuCap(int mhz)
+        {
+            try { monitor.SetCpuState(mhz); Check(cpuMenu, mhz); }
+            catch (Exception e)
+            {
+                Log.Write("set cpu cap " + mhz + ": " + e.Message);
+                tray.ShowBalloonTip(5000, "设置 CPU 最高频率失败", e.Message, ToolTipIcon.Error);
+            }
+        }
+
+        void PickFan(int level)
+        {
+            ThreadPool.QueueUserWorkItem(_ =>
+            {
+                try { monitor.SetFan(level); ui.Post(__ => Check(fanMenu, level), null); }
+                catch (Exception e)
+                {
+                    Log.Write("set fan " + level + ": " + e.Message);
+                    ui.Post(__ => tray.ShowBalloonTip(5000, "设置风扇失败", e.Message, ToolTipIcon.Error), null);
+                }
+            });
+        }
+
+        void PickGpuCap(int mhz)
+        {
+            ThreadPool.QueueUserWorkItem(_ =>
+            {
+                try { monitor.SetGpuMax(mhz); ui.Post(__ => Check(gpuMenu, mhz), null); }
+                catch (Exception e)
+                {
+                    Log.Write("set gpu cap " + mhz + ": " + e.Message);
+                    ui.Post(__ => tray.ShowBalloonTip(5000, "设置 GPU 最高频率失败", e.Message, ToolTipIcon.Error), null);
+                }
+            });
         }
 
         void ShowCharge(int limit)
@@ -233,6 +330,13 @@ namespace XingyaoPerf
             overlay.Probe = probe;
         }
 
+        void PickGame(int when)
+        {
+            settings.GameOverlay = when;
+            for (int i = 0; i < 3; i++) gameItems[i].Checked = i == when;
+            settings.Save();
+        }
+
         void ToggleWeather()
         {
             settings.AvoidWeather = !settings.AvoidWeather;
@@ -258,6 +362,7 @@ namespace XingyaoPerf
             monitor.Dispose();
             if (probe != null) probe.Dispose();
             overlay.Dispose();
+            game.Dispose();
             ExitThread();
         }
     }
@@ -384,6 +489,8 @@ namespace XingyaoPerf
                     sw2.Restart();
                     t = TaskbarProbe.Probe();
                     sb.AppendLine("Taskbar probe: buttons end at " + t.TasksRight + ", weather " + t.WidgetsLeft + ".." + t.WidgetsRight + " (" + first + " ms first, " + sw2.ElapsedMilliseconds + " ms again)");
+                    sb.AppendLine("CPU max state (power plan): " + CpuCap.ReadPercent() + "%");
+                    sb.AppendLine("GPU frequency control: " + m.GpuCapAvailable + ", hardware max " + m.GpuHwMaxMhz + " MHz");
                     sb.AppendLine("Widths at 72 px: full " + Overlay.WidthFor(72, false) + ", compact " + Overlay.WidthFor(72, true));
                     me.Refresh();
                     sb.AppendLine("After probe: private " + (me.PrivateMemorySize64 / 1024 / 1024) + " MB, working set " + (me.WorkingSet64 / 1024 / 1024) + " MB");

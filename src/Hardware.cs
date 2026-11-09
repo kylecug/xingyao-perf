@@ -163,7 +163,8 @@ namespace XingyaoPerf
         // Protocol and write order from clmslgs/open-revo ptl_pmc.rs. See docs/protocol.md.
         byte Send(byte cmd, byte arg, bool reply)
         {
-            bool ok = (cmd == 0xf1 && arg >= 0x10 && arg <= 0x14) || ((cmd == 0xf2 || cmd == 0xf3) && arg <= 100);
+            bool ok = (cmd == 0xf1 && arg >= 0x10 && arg <= 0x14) || ((cmd == 0xf2 || cmd == 0xf3) && arg <= 100)
+                || cmd == 0xd6 || (cmd == 0xd5 && arg == 0x10);
             if (!ok) throw new ArgumentException("command not allowed");
             Wait(2, 0);
             if ((In(0x6c) & 1) != 0) throw new IOException("EC output pending, nothing sent");
@@ -186,6 +187,16 @@ namespace XingyaoPerf
             }
             finally { if (got) mutex.ReleaseMutex(); }
         }
+
+        // Fan writes, verified on this machine: D6 <pwm> holds both fans at one PWM, D5 10 returns them to the EC curve.
+        // Neither replies. Manual PWM bypasses the EC curve, so the caller must restore auto (see Monitor).
+        public void SetFanPercent(int percent)
+        {
+            if (percent < 30 || percent > 100) throw new ArgumentOutOfRangeException("percent");
+            Locked(() => Send(0xd6, (byte)Math.Round(percent * 255.0 / 100), false));
+        }
+
+        public void SetFanAuto() { Locked(() => Send(0xd5, 0x10, false)); }
 
         // Returns enabled (0 or 1), lower (stop charging at) and upper (discharge above) percentages.
         public int[] ReadCharge()
@@ -241,8 +252,14 @@ namespace XingyaoPerf
         [DllImport(D, CallingConvention = CallingConvention.Cdecl)] static extern int ctlEnumFrequencyDomains(IntPtr d, ref uint n, IntPtr[] f);
         [DllImport(D, CallingConvention = CallingConvention.Cdecl)] static extern int ctlFrequencyGetProperties(IntPtr f, ref FreqProps p);
         [DllImport(D, CallingConvention = CallingConvention.Cdecl)] static extern int ctlFrequencyGetState(IntPtr f, ref FreqState s);
+        [StructLayout(LayoutKind.Sequential)] struct FreqRange { public uint Size; public byte Version; public double Min, Max; }
+        [DllImport(D, CallingConvention = CallingConvention.Cdecl)] static extern int ctlFrequencyGetRange(IntPtr f, ref FreqRange r);
+        [DllImport(D, CallingConvention = CallingConvention.Cdecl)] static extern int ctlFrequencySetRange(IntPtr f, ref FreqRange r);
 
         readonly IntPtr api, domain;
+        readonly object gate = new object();
+        public readonly bool CanControl;
+        public readonly double HwMinMhz, HwMaxMhz;
 
         public GpuFreq()
         {
@@ -266,7 +283,7 @@ namespace XingyaoPerf
             {
                 var p = new FreqProps();
                 p.Size = (uint)Marshal.SizeOf(typeof(FreqProps));
-                if (ctlFrequencyGetProperties(f, ref p) == 0 && p.Type == 0) { domain = f; break; }
+                if (ctlFrequencyGetProperties(f, ref p) == 0 && p.Type == 0) { domain = f; CanControl = p.CanControl != 0; HwMinMhz = p.Min; HwMaxMhz = p.Max; break; }
             }
             if (domain == IntPtr.Zero) throw new InvalidOperationException("no GPU frequency domain");
         }
@@ -275,12 +292,99 @@ namespace XingyaoPerf
         {
             var s = new FreqState();
             s.Size = (uint)Marshal.SizeOf(typeof(FreqState));
-            int r = ctlFrequencyGetState(domain, ref s);
+            int r;
+            lock (gate) r = ctlFrequencyGetState(domain, ref s);
             if (r != 0) throw new InvalidOperationException("ctlFrequencyGetState 0x" + r.ToString("X8"));
             return s.Actual < 0 ? double.NaN : s.Actual;
         }
 
+        // The driver's allowed frequency range in MHz. Setting the maximum caps the GPU and leaves power to the CPU.
+        public void GetRange(out double min, out double max)
+        {
+            var g = new FreqRange { Size = (uint)Marshal.SizeOf(typeof(FreqRange)) };
+            int r;
+            lock (gate) r = ctlFrequencyGetRange(domain, ref g);
+            if (r != 0) throw new InvalidOperationException("ctlFrequencyGetRange 0x" + r.ToString("X8"));
+            min = g.Min; max = g.Max;
+        }
+
+        // Caps below this never take effect: under load the GPU still runs at its efficient frequency (900 MHz),
+        // even with the minimum lowered too. Measured on this machine.
+        public const int LowestCapMhz = 900;
+
+        // 0 removes the cap. In the IGCL range, -1 means the factory value, so the minimum always stays at the
+        // factory setting; writing the hardware minimum (100 MHz) lets the GPU idle far lower than normal.
+        public void SetMaxMhz(int mhz)
+        {
+            if (!CanControl) throw new NotSupportedException("驱动不允许控制 GPU 频率");
+            double max = mhz <= 0 ? -1 : Math.Max(LowestCapMhz, Math.Min(HwMaxMhz, mhz));
+            var g = new FreqRange { Size = (uint)Marshal.SizeOf(typeof(FreqRange)), Min = -1, Max = max };
+            int r;
+            lock (gate) r = ctlFrequencySetRange(domain, ref g);
+            if (r != 0) throw new InvalidOperationException("ctlFrequencySetRange 0x" + r.ToString("X8"));
+        }
+
         public void Dispose() { if (api != IntPtr.Zero) ctlClose(api); }
+    }
+
+    // CPU cap through the active Windows power plan's "Maximum processor state" (percent), for both efficiency
+    // classes (0: E and LPE cores, 1: P cores), on AC and battery. Below 100% turbo is off and the percent applies
+    // to the base frequency: measured 99% about 1.8 GHz on P cores, 80% about 1.5, 70% about 1.3.
+    // The "Maximum processor frequency" setting would allow caps above base, but on this machine other software
+    // (probably Intel DTT) rewrites it within a minute, so it is only cleared. See docs/protocol.md.
+    internal static class CpuCap
+    {
+        static Guid Sub = new Guid("54533251-82be-4824-96c1-47b60b740d00");
+        static readonly Guid[] State = { new Guid("bc5038f7-23e0-4960-96da-33abaf5935ec"), new Guid("bc5038f7-23e0-4960-96da-33abaf5935ed") };
+        static readonly Guid[] Freq = { new Guid("75b0ae3f-bce0-45a7-8c89-c9611c25e100"), new Guid("75b0ae3f-bce0-45a7-8c89-c9611c25e101") };
+        [DllImport("powrprof.dll")] static extern uint PowerGetActiveScheme(IntPtr root, out IntPtr scheme);
+        [DllImport("powrprof.dll")] static extern uint PowerReadACValueIndex(IntPtr root, ref Guid scheme, ref Guid sub, ref Guid setting, out uint value);
+        [DllImport("powrprof.dll")] static extern uint PowerWriteACValueIndex(IntPtr root, ref Guid scheme, ref Guid sub, ref Guid setting, uint value);
+        [DllImport("powrprof.dll")] static extern uint PowerWriteDCValueIndex(IntPtr root, ref Guid scheme, ref Guid sub, ref Guid setting, uint value);
+        [DllImport("powrprof.dll")] static extern uint PowerSetActiveScheme(IntPtr root, ref Guid scheme);
+        [DllImport("kernel32.dll")] static extern IntPtr LocalFree(IntPtr p);
+
+        static Guid Active()
+        {
+            IntPtr p;
+            uint r = PowerGetActiveScheme(IntPtr.Zero, out p);
+            if (r != 0) throw new InvalidOperationException("PowerGetActiveScheme " + r);
+            try { return (Guid)Marshal.PtrToStructure(p, typeof(Guid)); } finally { LocalFree(p); }
+        }
+
+        static void Write(Guid[] settings, uint value)
+        {
+            Guid scheme = Active();
+            foreach (var setting in settings)
+            {
+                Guid s = setting;
+                uint r = PowerWriteACValueIndex(IntPtr.Zero, ref scheme, ref Sub, ref s, value);
+                if (r == 0) r = PowerWriteDCValueIndex(IntPtr.Zero, ref scheme, ref Sub, ref s, value);
+                if (r != 0) throw new InvalidOperationException("power plan write " + r);
+            }
+            uint a = PowerSetActiveScheme(IntPtr.Zero, ref scheme); // applies the change
+            if (a != 0) throw new InvalidOperationException("PowerSetActiveScheme " + a);
+        }
+
+        // Percent for the P cores on AC power.
+        public static int ReadPercent()
+        {
+            Guid scheme = Active(), s = State[1];
+            uint v;
+            uint r = PowerReadACValueIndex(IntPtr.Zero, ref scheme, ref Sub, ref s, out v);
+            if (r != 0) throw new InvalidOperationException("PowerReadACValueIndex " + r);
+            return (int)v;
+        }
+
+        public static void SetPercent(int percent)
+        {
+            if (percent < 50 || percent > 100) throw new ArgumentOutOfRangeException("percent");
+            Write(State, (uint)percent);
+            if (ReadPercent() != percent) throw new InvalidOperationException("power plan read-back mismatch");
+        }
+
+        // Removes the frequency cap an earlier version wrote.
+        public static void ClearFrequencyCap() { Write(Freq, 0); }
     }
 
     // Package temperature from Intel DTT. Domain 0 is the processor package. Needs administrator rights.

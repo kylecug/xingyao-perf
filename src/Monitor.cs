@@ -27,6 +27,11 @@ namespace XingyaoPerf
         public bool Overlay = true;
         public bool AvoidWeather = true;
         public int Layout; // 0 auto, 1 full, 2 compact
+        public int GpuMaxMhz; // 0 = no cap; reapplied because the driver may reset it
+        public int CpuMaxMhz; // old frequency cap; only read so it can be cleared once
+        public int CpuState = 100; // maximum processor state in percent; reapplied in case the plan changes
+        public int GameOverlay = 1; // 0 off, 1 listed games only, 2 any fullscreen app (and listed games)
+        public string Games = "League of Legends"; // process names without .exe, separated by |
 
         public static Settings Load()
         {
@@ -40,6 +45,11 @@ namespace XingyaoPerf
                     if (kv[0] == "mode") int.TryParse(kv[1], out s.Mode);
                     else if (kv[0] == "overlay") s.Overlay = kv[1] != "0";
                     else if (kv[0] == "avoidweather") s.AvoidWeather = kv[1] != "0";
+                    else if (kv[0] == "gameoverlay") { int.TryParse(kv[1], out s.GameOverlay); if (s.GameOverlay < 0 || s.GameOverlay > 2) s.GameOverlay = 1; }
+                    else if (kv[0] == "games") s.Games = kv[1];
+                    else if (kv[0] == "gpumax") int.TryParse(kv[1], out s.GpuMaxMhz);
+                    else if (kv[0] == "cpumax") int.TryParse(kv[1], out s.CpuMaxMhz);
+                    else if (kv[0] == "cpustate") { int.TryParse(kv[1], out s.CpuState); if (s.CpuState < 50 || s.CpuState > 100) s.CpuState = 100; }
                     else if (kv[0] == "layout") { int.TryParse(kv[1], out s.Layout); if (s.Layout < 0 || s.Layout > 2) s.Layout = 0; }
                 }
             }
@@ -54,7 +64,7 @@ namespace XingyaoPerf
             try
             {
                 Directory.CreateDirectory(Log.Dir);
-                File.WriteAllText(FilePath, "mode=" + Mode + "\noverlay=" + (Overlay ? "1" : "0") + "\navoidweather=" + (AvoidWeather ? "1" : "0") + "\nlayout=" + Layout + "\n");
+                File.WriteAllText(FilePath, "mode=" + Mode + "\noverlay=" + (Overlay ? "1" : "0") + "\navoidweather=" + (AvoidWeather ? "1" : "0") + "\nlayout=" + Layout + "\ngameoverlay=" + GameOverlay + "\ngames=" + Games + "\ngpumax=" + GpuMaxMhz + "\ncpumax=" + CpuMaxMhz + "\ncpustate=" + CpuState + "\n");
             }
             catch (Exception e) { Log.Write("save settings: " + e.Message); }
         }
@@ -78,6 +88,13 @@ namespace XingyaoPerf
         public static bool SkipGpu; // --no-gpu: the frequency library is the largest memory user.
 
         public event Action<int> ModeChanged;
+        public event Action<string> FanReleased; // manual fan speed was handed back to the EC, with the reason
+
+        // Manual fan percent, 0 for the EC curve. Not saved: every start begins on the EC curve.
+        const double FanSafeTempC = 85;
+        volatile int fanPercent;
+        int fanUnknownTemp;
+        public int FanPercent { get { return fanPercent; } }
         public Snapshot Latest { get { return latest; } }
         public int CurrentMode { get { return currentMode; } }
 
@@ -135,6 +152,9 @@ namespace XingyaoPerf
         void Run()
         {
             InitSensors();
+            // A crash or power loss may have left a manual speed in the EC, so always start on the EC curve.
+            // This is here, not in InitSensors, because --selftest must not write anything.
+            if (fans != null) try { fans.SetFanAuto(); } catch (Exception e) { Log.Write("fan auto at start: " + e.Message); }
             int tick = 0;
             var last = DateTime.UtcNow;
             while (running)
@@ -142,8 +162,10 @@ namespace XingyaoPerf
                 var now = DateTime.UtcNow;
                 if ((now - last).TotalSeconds > SleepGapSeconds) restoreUntil = now.AddSeconds(RestoreWindowSeconds); // woke from sleep
                 last = now;
+                if (tick % 30 == 1) { KeepGpuCap(); KeepCpuCap(); } // shortly after start, then every minute
                 if (tick++ % ModeEveryTicks == 0) CheckMode();
                 latest = SampleOnce();
+                if (fanPercent > 0) KeepFan(latest, tick);
                 Thread.Sleep(IntervalMs);
             }
         }
@@ -195,6 +217,96 @@ namespace XingyaoPerf
             Publish(mode);
         }
 
+        // 0 hands the fans back to the EC curve. Called from a worker thread.
+        public void SetFan(int percent)
+        {
+            var f = fans;
+            if (f == null) throw new InvalidOperationException("EC 端口不可用");
+            if (percent <= 0) { f.SetFanAuto(); fanPercent = 0; Log.Write("fan auto"); return; }
+            f.SetFanPercent(percent);
+            fanPercent = percent;
+            fanUnknownTemp = 0;
+            Log.Write("fan manual " + percent + "%");
+        }
+
+        void ReleaseFan(string why)
+        {
+            try { SetFan(0); } catch (Exception e) { Log.Write("fan release failed: " + e.Message); }
+            Log.Write("fan released: " + why);
+            var h = FanReleased;
+            if (h != null) h(why);
+        }
+
+        // While manual: hand back to the EC when hot or when the temperature cannot be read, and re-send the
+        // speed every 3 samples (6 s) in case the EC drops it.
+        void KeepFan(Snapshot s, int tick)
+        {
+            if (double.IsNaN(s.TempC)) { if (++fanUnknownTemp >= 3) { ReleaseFan("读不到温度"); return; } }
+            else fanUnknownTemp = 0;
+            if (s.TempC >= FanSafeTempC) { ReleaseFan("温度 " + s.TempC.ToString("0") + " °C"); return; }
+            if (tick % 3 == 0)
+            {
+                var f = fans;
+                try { if (f != null) f.SetFanPercent(fanPercent); } catch (Exception e) { Log.Write("fan resend: " + e.Message); }
+            }
+        }
+
+        // Before sleep the EC must own the fans again.
+        public void OnSuspend() { if (fanPercent > 0) ReleaseFan("睡眠"); }
+
+        // GPU frequency cap. The driver can drop it after a restart or driver update, so it is checked every minute.
+        public bool GpuCapAvailable { get { var g = gpu; return g != null && g.CanControl; } }
+        public double GpuHwMaxMhz { get { var g = gpu; return g == null ? 0 : g.HwMaxMhz; } }
+
+        public void SetGpuMax(int mhz)
+        {
+            var g = gpu;
+            if (g == null) throw new InvalidOperationException("GPU 频率接口不可用");
+            g.SetMaxMhz(mhz);
+            settings.GpuMaxMhz = mhz;
+            settings.Save();
+            Log.Write("gpu max set to " + mhz);
+        }
+
+        public void SetCpuState(int percent)
+        {
+            CpuCap.SetPercent(percent);
+            settings.CpuState = percent;
+            settings.Save();
+            Log.Write("cpu max state set to " + percent);
+        }
+
+        void KeepCpuCap()
+        {
+            try
+            {
+                if (settings.CpuMaxMhz != 0)
+                {
+                    CpuCap.ClearFrequencyCap();
+                    Log.Write("cleared old cpu frequency cap " + settings.CpuMaxMhz);
+                    settings.CpuMaxMhz = 0;
+                    settings.Save();
+                }
+                if (settings.CpuState == 100) return; // the default is left to Windows and other software
+                int now = CpuCap.ReadPercent();
+                if (now != settings.CpuState) { CpuCap.SetPercent(settings.CpuState); Log.Write("cpu max state reapplied " + settings.CpuState + " (was " + now + ")"); }
+            }
+            catch (Exception e) { Log.Write("cpu cap: " + e.Message); }
+        }
+
+        void KeepGpuCap()
+        {
+            var g = gpu;
+            if (g == null || !g.CanControl || settings.GpuMaxMhz <= 0) return;
+            try
+            {
+                double min, max;
+                g.GetRange(out min, out max);
+                if (Math.Abs(max - Math.Max(GpuFreq.LowestCapMhz, Math.Min(settings.GpuMaxMhz, g.HwMaxMhz))) > 1) { g.SetMaxMhz(settings.GpuMaxMhz); Log.Write("gpu max reapplied " + settings.GpuMaxMhz); }
+            }
+            catch (Exception e) { Log.Write("gpu cap: " + e.Message); }
+        }
+
         // Charge limit in percent, 0 when off. Called from a worker thread; the EC keeps the setting itself.
         public int ReadChargeLimit()
         {
@@ -217,6 +329,7 @@ namespace XingyaoPerf
         public void Dispose()
         {
             running = false;
+            if (fanPercent > 0) try { fans.SetFanAuto(); fanPercent = 0; Log.Write("fan auto at exit"); } catch (Exception e) { Log.Write("fan auto at exit: " + e.Message); }
             if (thread.IsAlive) thread.Join(5000);
             if (counters != null) counters.Dispose();
             if (fans != null) fans.Dispose();

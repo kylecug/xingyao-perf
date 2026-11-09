@@ -7,7 +7,7 @@ Protocol details and test results are in `docs/protocol.md`.
 ## Safety
 
 - Writing to firmware or the EC can harm the machine. Only send commands already verified in `docs/protocol.md`, and tell the user before anything new.
-- Fan writes are documented but have never been tested here.
+- Fan writes `D6` (shared PWM) and `D5 10` (auto) are verified here with `scripts/fan-test.ps1` and used by the tray fan menu (30-100%, with hand-back to the EC at 85 C, unreadable temperature, sleep, exit and start); `D7`/`D8` are untested.
 - Claude Code runs without admin rights. Anything needing admin must be run by the user in their own administrator window; sending keystrokes to that window is blocked by Windows.
 
 ## Status (2026-11-09)
