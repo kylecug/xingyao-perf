@@ -139,7 +139,7 @@ namespace XingyaoPerf
             menu.Items.Add(chargeMenu);
             menu.Items.Add(new ToolStripSeparator());
             var gameMenu = new ToolStripMenuItem("游戏和全屏时显示监控");
-            string[] gameNames = { "关闭", "仅游戏（英雄联盟）", "所有全屏程序和游戏" };
+            string[] gameNames = { "关闭", "仅游戏（自动识别）", "所有全屏程序和游戏" };
             for (int i = 0; i < 3; i++)
             {
                 int when = i;

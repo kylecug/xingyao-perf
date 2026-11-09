@@ -31,7 +31,7 @@ namespace XingyaoPerf
         public int CpuMaxMhz; // old frequency cap; only read so it can be cleared once
         public int CpuState = 100; // maximum processor state in percent; reapplied in case the plan changes
         public int GameOverlay = 1; // 0 off, 1 listed games only, 2 any fullscreen app (and listed games)
-        public string Games = "League of Legends"; // process names without .exe, separated by |
+        public string Games = ""; // extra game process names without .exe, separated by |, beyond the ones Windows recognises
 
         public static Settings Load()
         {

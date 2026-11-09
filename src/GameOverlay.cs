@@ -20,12 +20,47 @@ namespace XingyaoPerf
         readonly Overlay renderer = new Overlay(); // used only to draw the bars; it never creates a window
         readonly Dictionary<uint, bool> isGame = new Dictionary<uint, bool>();
         string[] games = new string[0];
+        HashSet<string> known = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        DateTime knownAt = DateTime.MinValue;
+
+        // Windows records the games it recognises (the ones Game Bar and Game Mode act on) under this key.
+        // Their launchers and clients are recognised too, so these are left out.
+        const string GameStore = @"System\GameConfigStore\Children";
+        static readonly string[] NotGames = { "LeagueClientUx", "LeagueClient", "RiotClientServices", "RiotClientUx", "EpicGamesLauncher", "steam", "steamwebhelper", "Battle.net", "EADesktop", "Origin", "upc", "GalaxyClient" };
+
+        void LoadKnownGames()
+        {
+            var set = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            try
+            {
+                using (var root = Microsoft.Win32.Registry.CurrentUser.OpenSubKey(GameStore))
+                    if (root != null)
+                        foreach (var sub in root.GetSubKeyNames())
+                            using (var k = root.OpenSubKey(sub))
+                            {
+                                var path = k == null ? null : k.GetValue("MatchedExeFullPath") as string;
+                                if (string.IsNullOrEmpty(path)) continue;
+                                string name = System.IO.Path.GetFileNameWithoutExtension(path);
+                                if (Array.IndexOf(NotGames, name) < 0 && !NotGame(name)) set.Add(name);
+                            }
+            }
+            catch (Exception e) { Log.Write("game list: " + e.Message); }
+            known = set;
+            knownAt = DateTime.UtcNow;
+        }
+
+        static bool NotGame(string name)
+        {
+            foreach (var n in NotGames) if (string.Equals(n, name, StringComparison.OrdinalIgnoreCase)) return true;
+            return false;
+        }
         Snapshot values;
         Font font;
         int lastH, lastX = int.MinValue, lastY = int.MinValue;
         bool shown, dirty = true;
 
-        // Process names without ".exe", compared case-insensitively. A game shows the bars even in a window.
+        // Extra process names without ".exe", compared case-insensitively, for games Windows does not recognise.
+        // A game shows the bars even in a window.
         public void SetGames(string[] names) { games = names; isGame.Clear(); }
 
         public void SetValues(Snapshot s) { values = s; dirty = true; }
@@ -37,10 +72,12 @@ namespace XingyaoPerf
             if (pid == 0) return false;
             bool hit;
             if (isGame.TryGetValue(pid, out hit)) return hit;
+            // Windows adds a game to its list the first time it runs, so the list is re-read now and then.
+            if ((DateTime.UtcNow - knownAt).TotalMinutes > 5) LoadKnownGames();
             string name = "";
             // The name comes from the system process list, so it also works for processes protected by anti-cheat.
             try { using (var p = Process.GetProcessById((int)pid)) name = p.ProcessName; } catch { }
-            hit = false;
+            hit = name.Length > 0 && known.Contains(name);
             foreach (var g in games) if (string.Equals(g.Trim(), name, StringComparison.OrdinalIgnoreCase)) hit = true;
             if (isGame.Count > 200) isGame.Clear();
             isGame[pid] = hit;

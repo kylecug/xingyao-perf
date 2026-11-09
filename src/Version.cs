@@ -3,14 +3,14 @@ using System.Reflection;
 // Bump on every release, together with src/app.manifest, and tag the commit vX.Y.Z.
 [assembly: AssemblyTitle("xingyao-perf")]
 [assembly: AssemblyProduct("xingyao-perf")]
-[assembly: AssemblyVersion("0.9.1.0")]
-[assembly: AssemblyFileVersion("0.9.1.0")]
-[assembly: AssemblyInformationalVersion("0.9.1")]
+[assembly: AssemblyVersion("0.9.2.0")]
+[assembly: AssemblyFileVersion("0.9.2.0")]
+[assembly: AssemblyInformationalVersion("0.9.2")]
 
 namespace XingyaoPerf
 {
     internal static class AppVersion
     {
-        public const string Text = "0.9.1";
+        public const string Text = "0.9.2";
     }
 }
