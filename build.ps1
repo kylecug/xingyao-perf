@@ -9,6 +9,7 @@ $exe = Join-Path $out 'xingyao-perf.exe'
 Get-ChildItem $out -Filter '*.exe.*.old' -ErrorAction SilentlyContinue | ForEach-Object { try { Remove-Item $_.FullName -ErrorAction Stop } catch {} }
 if (Test-Path $exe) { Move-Item $exe "$exe.$(Get-Date -Format yyyyMMddHHmmss).old" }
 & $csc /nologo /target:winexe /platform:x64 /optimize+ /codepage:65001 "/out:$exe" "/win32manifest:$root\src\app.manifest" `
-    /r:System.dll /r:System.Management.dll /r:System.Windows.Forms.dll /r:System.Drawing.dll "$root\src\*.cs"
+    /r:System.dll /r:System.Management.dll /r:System.Windows.Forms.dll /r:System.Drawing.dll `
+    "/lib:$(Split-Path $csc)\WPF" /r:UIAutomationClient.dll /r:UIAutomationTypes.dll /r:WindowsBase.dll "$root\src\*.cs"
 if ($LASTEXITCODE -ne 0) { throw "csc failed with exit code $LASTEXITCODE" }
 "Built $exe ($([math]::Round((Get-Item $exe).Length / 1KB)) KB)"

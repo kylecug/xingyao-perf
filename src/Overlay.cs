@@ -18,6 +18,11 @@ namespace XingyaoPerf
     //   CPU | 45% | P 4.2 | E 3.8 | L 2.1 | 39.9 W |       | 6506 rpm
     //   GPU | 80% |     2.10 GHz          | 22.4 W | 69 °C | 6282 rpm
     //
+    // The compact layout drops the E and LPE frequencies and the fans:
+    //
+    //   CPU | 45% | P 4.2    | 39.9 W |
+    //   GPU | 80% | 2.10 GHz | 22.4 W | 69 °C
+    //
     // Usage, frequency and power line up in columns. CPU and GPU share one package, so the
     // temperature spans both rows. The two fans are stacked but not tied to a row,
     // because which fan cools which part is not known.
@@ -30,9 +35,17 @@ namespace XingyaoPerf
         // Layout in pixels for a 60 px tall taskbar, scaled to the real height.
         const float RowH = 26, RowGap = 3, Radius = 3, LabelW = 30, PctW = 40, FreqW = 45, InnerGap = 2, PowerW = 51, TempW = 44, FanW = 63, ColGap = 5;
 
+        const float CompactFreqW = 60;
+
         // Room for the Windows weather button, which sits beside the tray when taskbar icons are left-aligned.
+        // Used only when the probe cannot read the button's real position.
         const float WeatherW = 200;
         public bool AvoidWeather;
+
+        public const int LayoutAuto = 0, LayoutFull = 1, LayoutCompact = 2;
+        public int Layout;
+        public TaskbarProbe Probe;
+        bool compact;
 
         // Bars are full at these values. Frequency scales are for display only.
         const double CpuGhzMax = 5.0, GpuGhzMax = 2.5, PkgWMax = 60, GpuWMax = 40, TempMin = 30, TempMax = 100, FanMax = 7500;
@@ -106,10 +119,25 @@ namespace XingyaoPerf
             return Num(s.CpuPct, "0") + "|" + Num(s.GpuPct, "0") + "|" + Num(s.PGhz, "0.0") + Num(s.EGhz, "0.0") + Num(s.LGhz, "0.0") + "|" + Num(s.PkgW, "0.0") + "|" + Num(s.TempC, "0") + "|" + Num(s.GpuMhz, "0") + "|" + Num(s.GpuW, "0.0") + "|" + s.Fan0 + "|" + s.Fan1;
         }
 
-        public static int WidthFor(int h)
+        public static int WidthFor(int h, bool compact)
         {
             float k = h / 60f;
-            return (int)Math.Ceiling(k * (LabelW + PctW + ColGap + FreqW * 3 + InnerGap * 2 + ColGap + PowerW + ColGap + TempW + ColGap + FanW)) + 2;
+            float units = compact
+                ? LabelW + PctW + ColGap + CompactFreqW + ColGap + PowerW + ColGap + TempW
+                : LabelW + PctW + ColGap + FreqW * 3 + InnerGap * 2 + ColGap + PowerW + ColGap + TempW + ColGap + FanW;
+            return (int)Math.Ceiling(k * units) + 2;
+        }
+
+        // Auto picks the full layout when it fits between the taskbar buttons and the right edge.
+        // The margin before switching back to full stops it flipping when the space is borderline.
+        bool PickCompact(int h, int edge, TaskbarProbe.Result p)
+        {
+            if (Layout == LayoutFull) return false;
+            if (Layout == LayoutCompact) return true;
+            if (p == null || p.TasksRight < 0) return compact;
+            int room = edge - 8 - (p.TasksRight + 12);
+            int full = WidthFor(h, false);
+            return compact ? room < full + 24 : room < full;
         }
 
         static bool LightTaskbar()
@@ -139,13 +167,25 @@ namespace XingyaoPerf
             {
                 if (font != null) font.Dispose();
                 font = MakeFont(h);
-                width = WidthFor(h);
                 lastH = h; lastLight = light; drawn = null;
             }
+
+            // Stay left of the weather button when it sits between the taskbar buttons and the tray.
+            var p = Probe == null ? null : Probe.Latest;
+            if (p != null && (DateTime.UtcNow - p.At).TotalSeconds > 15) p = null;
+            int edge = right;
+            if (AvoidWeather)
+            {
+                if (p == null) edge -= (int)Math.Ceiling(h / 60f * WeatherW);
+                else if (p.WidgetsLeft > p.TasksRight && p.WidgetsRight <= right + 2) edge = p.WidgetsLeft;
+            }
+            bool c = PickCompact(h, edge, p);
+            int w = WidthFor(h, c);
+            if (c != compact || w != width) { compact = c; width = w; drawn = null; lastX = int.MinValue; }
             if (Handle == IntPtr.Zero || (!embedFailed && embeddedIn != bar)) Create(bar);
             if (!shown) { Native.ShowWindow(Handle, Native.SW_SHOWNA); shown = true; drawn = null; }
 
-            int x = right - width - 8 - (AvoidWeather ? (int)Math.Ceiling(h / 60f * WeatherW) : 0), y = r.Top;
+            int x = edge - width - 8, y = r.Top;
             if (embeddedIn != IntPtr.Zero)
             {
                 x -= r.Left; y -= r.Top; // Child positions are relative to the taskbar.
@@ -213,14 +253,14 @@ namespace XingyaoPerf
             }
         }
 
-        public Bitmap Render(int w, int h, Font f, bool light)
+        public Bitmap Render(int w, int h, Font f, bool light, bool compact)
         {
             var s = values;
             currentTrack = light ? TrackLight : TrackDark;
             float k = h / 60f;
             float rowH = RowH * k, gap = RowGap * k, rad = Radius * k, inner = InnerGap * k, col = ColGap * k;
             float y1 = (h - rowH * 2 - gap) / 2, y2 = y1 + rowH + gap;
-            float freqW = FreqW * k, freqAll = freqW * 3 + inner * 2;
+            float freqW = FreqW * k, freqAll = compact ? CompactFreqW * k : freqW * 3 + inner * 2;
             float xPct = LabelW * k, xFreq = xPct + (PctW + ColGap) * k, xPower = xFreq + freqAll + col, xTemp = xPower + PowerW * k + col, xFan = xTemp + TempW * k + col;
 
             var bmp = new Bitmap(w, h, PixelFormat.Format32bppArgb);
@@ -240,9 +280,14 @@ namespace XingyaoPerf
                 Bar(g, f, center, new RectangleF(xPct, y1, PctW * k, rowH), rad, s.CpuPct / 100, Level(s.CpuPct, 70, 90), Num(s.CpuPct, "0") + "%");
                 Bar(g, f, center, new RectangleF(xPct, y2, PctW * k, rowH), rad, s.GpuPct / 100, Level(s.GpuPct, 70, 90), Num(s.GpuPct, "0") + "%");
 
-                Bar(g, f, center, new RectangleF(xFreq, y1, freqW, rowH), rad, s.PGhz / CpuGhzMax, Freq, "P " + Num(s.PGhz, "0.0"));
-                Bar(g, f, center, new RectangleF(xFreq + freqW + inner, y1, freqW, rowH), rad, s.EGhz / CpuGhzMax, Freq, "E " + Num(s.EGhz, "0.0"));
-                Bar(g, f, center, new RectangleF(xFreq + (freqW + inner) * 2, y1, freqW, rowH), rad, s.LGhz / CpuGhzMax, Freq, "L " + Num(s.LGhz, "0.0"));
+                if (compact)
+                    Bar(g, f, center, new RectangleF(xFreq, y1, freqAll, rowH), rad, s.PGhz / CpuGhzMax, Freq, "P " + Num(s.PGhz, "0.0"));
+                else
+                {
+                    Bar(g, f, center, new RectangleF(xFreq, y1, freqW, rowH), rad, s.PGhz / CpuGhzMax, Freq, "P " + Num(s.PGhz, "0.0"));
+                    Bar(g, f, center, new RectangleF(xFreq + freqW + inner, y1, freqW, rowH), rad, s.EGhz / CpuGhzMax, Freq, "E " + Num(s.EGhz, "0.0"));
+                    Bar(g, f, center, new RectangleF(xFreq + (freqW + inner) * 2, y1, freqW, rowH), rad, s.LGhz / CpuGhzMax, Freq, "L " + Num(s.LGhz, "0.0"));
+                }
                 Bar(g, f, center, new RectangleF(xFreq, y2, freqAll, rowH), rad, s.GpuMhz / 1000 / GpuGhzMax, Freq, Num(s.GpuMhz / 1000, "0.00") + " GHz");
 
                 Bar(g, f, center, new RectangleF(xPower, y1, PowerW * k, rowH), rad, s.PkgW / PkgWMax, Level(s.PkgW, 40, 50), Num(s.PkgW, "0.0") + " W");
@@ -250,6 +295,7 @@ namespace XingyaoPerf
 
                 Bar(g, f, center, new RectangleF(xTemp, y1, TempW * k, rowH * 2 + gap), rad, (s.TempC - TempMin) / (TempMax - TempMin), Level(s.TempC, 80, 90), Num(s.TempC, "0") + " °C");
 
+                if (compact) return bmp;
                 Bar(g, f, center, new RectangleF(xFan, y1, FanW * k, rowH), rad, s.Fan0 < 0 ? double.NaN : s.Fan0 / FanMax, Level(s.Fan0, 5000, 6500), (s.Fan0 < 0 ? "--" : s.Fan0.ToString()) + " rpm");
                 Bar(g, f, center, new RectangleF(xFan, y2, FanW * k, rowH), rad, s.Fan1 < 0 ? double.NaN : s.Fan1 / FanMax, Level(s.Fan1, 5000, 6500), (s.Fan1 < 0 ? "--" : s.Fan1.ToString()) + " rpm");
             }
@@ -262,7 +308,7 @@ namespace XingyaoPerf
             string key = Key(values);
             if (key == drawn) return;
             drawn = key;
-            using (var bmp = Render(width, lastH, font, lastLight))
+            using (var bmp = Render(width, lastH, font, lastLight, compact))
             {
                 IntPtr screen = Native.GetDC(IntPtr.Zero), mem = Native.CreateCompatibleDC(screen);
                 IntPtr hbmp = bmp.GetHbitmap(Color.FromArgb(0)), old = Native.SelectObject(mem, hbmp);

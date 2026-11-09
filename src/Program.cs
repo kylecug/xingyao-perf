@@ -59,6 +59,8 @@ namespace XingyaoPerf
         readonly ContextMenuStrip menu = new ContextMenuStrip();
         readonly ToolStripMenuItem[] modeItems = new ToolStripMenuItem[4];
         readonly ToolStripMenuItem overlayItem, weatherItem, startupItem;
+        readonly ToolStripMenuItem[] layoutItems = new ToolStripMenuItem[3];
+        TaskbarProbe probe; // Runs only for the auto layout. Manual layouts never load UI Automation.
         readonly System.Windows.Forms.Timer timer = new System.Windows.Forms.Timer { Interval = 500 };
         readonly SynchronizationContext ui;
         IntPtr iconHandle;
@@ -78,8 +80,19 @@ namespace XingyaoPerf
             overlayItem = new ToolStripMenuItem("在任务栏显示监控", null, (s, e) => ToggleOverlay()) { Checked = settings.Overlay };
             weatherItem = new ToolStripMenuItem("避让天气", null, (s, e) => ToggleWeather()) { Checked = settings.AvoidWeather };
             overlay.AvoidWeather = settings.AvoidWeather;
+            overlay.Layout = settings.Layout;
+            UpdateProbe();
+            var layoutMenu = new ToolStripMenuItem("监控条样式");
+            string[] layoutNames = { "自动（空间不够时用精简版）", "完整版", "精简版" };
+            for (int i = 0; i < 3; i++)
+            {
+                int layout = i;
+                layoutItems[i] = new ToolStripMenuItem(layoutNames[i], null, (s, e) => PickLayout(layout)) { Checked = settings.Layout == i };
+                layoutMenu.DropDownItems.Add(layoutItems[i]);
+            }
             startupItem = new ToolStripMenuItem("开机自动启动", null, (s, e) => ToggleStartup());
             menu.Items.Add(overlayItem);
+            menu.Items.Add(layoutMenu);
             menu.Items.Add(weatherItem);
             menu.Items.Add(startupItem);
             menu.Items.Add(new ToolStripSeparator());
@@ -141,6 +154,23 @@ namespace XingyaoPerf
             settings.Save();
         }
 
+        void PickLayout(int layout)
+        {
+            settings.Layout = layout;
+            overlay.Layout = layout;
+            for (int i = 0; i < 3; i++) layoutItems[i].Checked = i == layout;
+            UpdateProbe();
+            settings.Save();
+        }
+
+        void UpdateProbe()
+        {
+            bool want = settings.Layout == Overlay.LayoutAuto;
+            if (want && probe == null) probe = new TaskbarProbe();
+            else if (!want && probe != null) { probe.Dispose(); probe = null; }
+            overlay.Probe = probe;
+        }
+
         void ToggleWeather()
         {
             settings.AvoidWeather = !settings.AvoidWeather;
@@ -164,6 +194,7 @@ namespace XingyaoPerf
             timer.Stop();
             tray.Visible = false;
             monitor.Dispose();
+            if (probe != null) probe.Dispose();
             overlay.Dispose();
             ExitThread();
         }
@@ -216,12 +247,12 @@ namespace XingyaoPerf
         }
 
         // Live values, then a hot example, on dark and light taskbars, followed by the three mode icons.
-        static void SavePreview(string file, Snapshot live)
+        static void SavePreview(string file, Snapshot live, bool compact)
         {
             var hot = new Snapshot { CpuPct = 100, GpuPct = 96, PGhz = 4.2, EGhz = 3.8, LGhz = 2.1, PkgW = 52.3, GpuW = 22.4, TempC = 91, GpuMhz = 2100, Fan0 = 6900, Fan1 = 4800 };
             var warm = new Snapshot { CpuPct = 76, GpuPct = 41, PGhz = 3.1, EGhz = 2.7, LGhz = 1.9, PkgW = 42.1, GpuW = 12.4, TempC = 83, GpuMhz = 1450, Fan0 = 5100, Fan1 = 3000 };
             const int H = 60;
-            int w = Overlay.WidthFor(H);
+            int w = Overlay.WidthFor(H, compact);
             var rows = new[] { live, warm, hot };
             using (var sheet = new Bitmap(w + 170, (H + 6) * rows.Length * 2))
             using (var g = Graphics.FromImage(sheet))
@@ -235,7 +266,7 @@ namespace XingyaoPerf
                     for (int i = 0; i < rows.Length; i++)
                     {
                         o.SetValues(rows[i]);
-                        using (var bmp = o.Render(w, H, f, light)) g.DrawImage(bmp, 6, (t * rows.Length + i) * (H + 6) + 3, w, H);
+                        using (var bmp = o.Render(w, H, f, light, compact)) g.DrawImage(bmp, 6, (t * rows.Length + i) * (H + 6) + 3, w, H);
                         for (int m = 1; m <= 3; m++)
                             using (var ic = ModeIcon.Draw(m, 40)) g.DrawImage(ic, w + 14 + (m - 1) * 50, (t * rows.Length + i) * (H + 6) + 13, 40, 40);
                     }
@@ -277,9 +308,23 @@ namespace XingyaoPerf
                 sb.AppendLine("Private memory: " + (me.PrivateMemorySize64 / 1024 / 1024) + " MB, working set " + (me.WorkingSet64 / 1024 / 1024) + " MB");
                 try
                 {
-                    SavePreview(path + ".png", last);
+                    SavePreview(path + ".png", last, false);
+                    SavePreview(path + ".compact.png", last, true);
                 }
                 catch (Exception e) { sb.AppendLine("preview: " + e.Message); }
+                try
+                {
+                    var sw2 = Stopwatch.StartNew();
+                    var t = TaskbarProbe.Probe();
+                    long first = sw2.ElapsedMilliseconds;
+                    sw2.Restart();
+                    t = TaskbarProbe.Probe();
+                    sb.AppendLine("Taskbar probe: buttons end at " + t.TasksRight + ", weather " + t.WidgetsLeft + ".." + t.WidgetsRight + " (" + first + " ms first, " + sw2.ElapsedMilliseconds + " ms again)");
+                    sb.AppendLine("Widths at 72 px: full " + Overlay.WidthFor(72, false) + ", compact " + Overlay.WidthFor(72, true));
+                    me.Refresh();
+                    sb.AppendLine("After probe: private " + (me.PrivateMemorySize64 / 1024 / 1024) + " MB, working set " + (me.WorkingSet64 / 1024 / 1024) + " MB");
+                }
+                catch (Exception e) { sb.AppendLine("taskbar probe: " + e.Message); }
             }
             File.WriteAllText(path, sb.ToString());
             return 0;

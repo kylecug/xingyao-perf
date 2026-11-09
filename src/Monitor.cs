@@ -26,6 +26,7 @@ namespace XingyaoPerf
         public int Mode;
         public bool Overlay = true;
         public bool AvoidWeather = true;
+        public int Layout; // 0 auto, 1 full, 2 compact
 
         public static Settings Load()
         {
@@ -39,6 +40,7 @@ namespace XingyaoPerf
                     if (kv[0] == "mode") int.TryParse(kv[1], out s.Mode);
                     else if (kv[0] == "overlay") s.Overlay = kv[1] != "0";
                     else if (kv[0] == "avoidweather") s.AvoidWeather = kv[1] != "0";
+                    else if (kv[0] == "layout") { int.TryParse(kv[1], out s.Layout); if (s.Layout < 0 || s.Layout > 2) s.Layout = 0; }
                 }
             }
             catch (IOException) { }
@@ -52,7 +54,7 @@ namespace XingyaoPerf
             try
             {
                 Directory.CreateDirectory(Log.Dir);
-                File.WriteAllText(FilePath, "mode=" + Mode + "\noverlay=" + (Overlay ? "1" : "0") + "\navoidweather=" + (AvoidWeather ? "1" : "0") + "\n");
+                File.WriteAllText(FilePath, "mode=" + Mode + "\noverlay=" + (Overlay ? "1" : "0") + "\navoidweather=" + (AvoidWeather ? "1" : "0") + "\nlayout=" + Layout + "\n");
             }
             catch (Exception e) { Log.Write("save settings: " + e.Message); }
         }
