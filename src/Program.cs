@@ -444,7 +444,7 @@ namespace XingyaoPerf
                         for (int j = 0; j < 59; j++)
                         {
                             double wave = 0.5 + 0.5 * Math.Sin(j / 6.0 + i);
-                            o.SetValues(new Snapshot { CpuPct = (rows[i].CpuPct + 5) * (0.3 + 0.7 * wave), GpuPct = (rows[i].GpuPct + 5) * wave, MemPct = 55 + 10 * wave, TempC = rows[i].TempC - 15 * (1 - wave), Fan0 = (int)(rows[i].Fan0 * (0.5 + 0.5 * wave)), Fan1 = (int)(rows[i].Fan1 * (0.5 + 0.5 * wave)), NetIn = 3e6 * wave * wave, NetOut = 4e5 * (1 - wave) });
+                            o.SetValues(new Snapshot { CpuPct = (rows[i].CpuPct + 5) * (0.3 + 0.7 * wave), GpuPct = (rows[i].GpuPct + 5) * wave, MemPct = 55 + 10 * wave, PGhz = rows[i].PGhz * (0.4 + 0.6 * wave), EGhz = rows[i].EGhz * (0.4 + 0.6 * wave), LGhz = rows[i].LGhz * (0.4 + 0.6 * wave), GpuMhz = rows[i].GpuMhz * (0.4 + 0.6 * wave), TempC = rows[i].TempC - 15 * (1 - wave), Fan0 = (int)(rows[i].Fan0 * (0.5 + 0.5 * wave)), Fan1 = (int)(rows[i].Fan1 * (0.5 + 0.5 * wave)), NetIn = 3e6 * wave * wave, NetOut = 4e5 * (1 - wave) });
                         }
                         o.SetValues(rows[i]);
                         using (var bmp = o.Render(w, H, f, light, compact)) g.DrawImage(bmp, 6, (t * rows.Length + i) * (H + 6) + 3, w, H);
