@@ -21,14 +21,15 @@ namespace XingyaoPerf
     // Usage and power boxes are Task Manager style history graphs: CPU and GPU usage behind the percentages,
     // physical memory in use behind the package power, network receive (solid) and send (dashed) behind
     // the GPU power. On battery the GPU power is replaced by the whole laptop's power, marked with a sigma.
+    // Temperature and fan speeds are history graphs as well; the temperature line takes the colour of its level.
     //
     // The compact layout has no labels. Like Task Manager, the first two columns are history graphs:
     // CPU and GPU usage behind their frequencies (CPU as Task Manager's "Speed"), physical memory in use
     // behind the package power, and network receive (solid) and send (dashed) behind the GPU power.
     // The last column is the temperature above the mean of the two fans:
     //
-    //   [cpu graph  3.1 GHz ] | [memory  39.9 W] | 69 °C
-    //   [gpu graph  2.10 GHz] | [network 22.4 W] | 4650 rpm
+    //   [cpu graph  3.1 GHz ] | [memory  39.9 W] | [temperature 69 °C]
+    //   [gpu graph  2.10 GHz] | [network 22.4 W] | [fan mean  4650 rpm]
     //
     // Usage, frequency and power line up in columns. CPU and GPU share one package, so the
     // temperature spans both rows. The two fans are stacked but not tied to a row,
@@ -65,6 +66,8 @@ namespace XingyaoPerf
         // Graph history, one entry per sample, newest at histNext - 1.
         const int Hist = 60;
         readonly double[] hCpu = new double[Hist], hGpu = new double[Hist], hMem = new double[Hist], hIn = new double[Hist], hOut = new double[Hist];
+        readonly double[] hTemp = new double[Hist], hFan0 = new double[Hist], hFan1 = new double[Hist], hFan = new double[Hist];
+        static readonly Color FanLine = Color.FromArgb(70, 180, 90);
         int histNext, histCount;
         static readonly Color CpuLine = Color.FromArgb(60, 160, 230), GpuLine = Color.FromArgb(40, 190, 170), MemLine = Color.FromArgb(190, 110, 230), NetLine = Color.FromArgb(235, 150, 50);
         int lastH, lastX, lastY, width;
@@ -129,6 +132,7 @@ namespace XingyaoPerf
         {
             values = s;
             hCpu[histNext] = s.CpuPct; hGpu[histNext] = s.GpuPct; hMem[histNext] = s.MemPct; hIn[histNext] = s.NetIn; hOut[histNext] = s.NetOut;
+            hTemp[histNext] = s.TempC; hFan0[histNext] = s.Fan0 < 0 ? double.NaN : s.Fan0; hFan1[histNext] = s.Fan1 < 0 ? double.NaN : s.Fan1; hFan[histNext] = FanMean(s);
             histNext = (histNext + 1) % Hist;
             if (histCount < Hist) histCount++;
             drawn = null; // the graphs move with every sample
@@ -301,21 +305,21 @@ namespace XingyaoPerf
                 g.DrawString("CPU", f, label, new RectangleF(0, y1, xPct, rowH), left);
                 g.DrawString("GPU", f, label, new RectangleF(0, y2, xPct, rowH), left);
 
-                Graph(g, f, center, new RectangleF(xPct, y1, PctW * k, rowH), rad, CpuLine, hCpu, 100, null, Num(s.CpuPct, "0") + "%");
-                Graph(g, f, center, new RectangleF(xPct, y2, PctW * k, rowH), rad, GpuLine, hGpu, 100, null, Num(s.GpuPct, "0") + "%");
+                Graph(g, f, center, new RectangleF(xPct, y1, PctW * k, rowH), rad, CpuLine, hCpu, 0, 100, null, Num(s.CpuPct, "0") + "%");
+                Graph(g, f, center, new RectangleF(xPct, y2, PctW * k, rowH), rad, GpuLine, hGpu, 0, 100, null, Num(s.GpuPct, "0") + "%");
 
                 Bar(g, f, center, new RectangleF(xFreq, y1, freqW, rowH), rad, s.PGhz / CpuGhzMax, Freq, "P " + Num(s.PGhz, "0.0"));
                 Bar(g, f, center, new RectangleF(xFreq + freqW + inner, y1, freqW, rowH), rad, s.EGhz / CpuGhzMax, Freq, "E " + Num(s.EGhz, "0.0"));
                 Bar(g, f, center, new RectangleF(xFreq + (freqW + inner) * 2, y1, freqW, rowH), rad, s.LGhz / CpuGhzMax, Freq, "L " + Num(s.LGhz, "0.0"));
                 Bar(g, f, center, new RectangleF(xFreq, y2, freqAll, rowH), rad, s.GpuMhz / 1000 / GpuGhzMax, Freq, Num(s.GpuMhz / 1000, "0.00") + " GHz");
 
-                Graph(g, f, center, new RectangleF(xPower, y1, PowerW * k, rowH), rad, MemLine, hMem, 100, null, Num(s.PkgW, "0.0") + " W");
-                Graph(g, f, center, new RectangleF(xPower, y2, PowerW * k, rowH), rad, NetLine, hIn, NetScale(), hOut, SecondPower(s));
+                Graph(g, f, center, new RectangleF(xPower, y1, PowerW * k, rowH), rad, MemLine, hMem, 0, 100, null, Num(s.PkgW, "0.0") + " W");
+                Graph(g, f, center, new RectangleF(xPower, y2, PowerW * k, rowH), rad, NetLine, hIn, 0, NetScale(), hOut, SecondPower(s));
 
-                Bar(g, f, center, new RectangleF(xTemp, y1, TempW * k, rowH * 2 + gap), rad, (s.TempC - TempMin) / (TempMax - TempMin), Level(s.TempC, 80, 90), Num(s.TempC, "0") + " °C");
+                Graph(g, f, center, new RectangleF(xTemp, y1, TempW * k, rowH * 2 + gap), rad, TempColor(s), hTemp, TempMin, TempMax, null, Num(s.TempC, "0") + " °C");
 
-                Bar(g, f, center, new RectangleF(xFan, y1, FanW * k, rowH), rad, s.Fan0 < 0 ? double.NaN : s.Fan0 / FanMax, Level(s.Fan0, 5000, 6500), (s.Fan0 < 0 ? "--" : s.Fan0.ToString()) + " rpm");
-                Bar(g, f, center, new RectangleF(xFan, y2, FanW * k, rowH), rad, s.Fan1 < 0 ? double.NaN : s.Fan1 / FanMax, Level(s.Fan1, 5000, 6500), (s.Fan1 < 0 ? "--" : s.Fan1.ToString()) + " rpm");
+                Graph(g, f, center, new RectangleF(xFan, y1, FanW * k, rowH), rad, FanLine, hFan0, 0, FanMax, null, (s.Fan0 < 0 ? "--" : s.Fan0.ToString()) + " rpm");
+                Graph(g, f, center, new RectangleF(xFan, y2, FanW * k, rowH), rad, FanLine, hFan1, 0, FanMax, null, (s.Fan1 < 0 ? "--" : s.Fan1.ToString()) + " rpm");
             }
             return bmp;
         }
@@ -323,10 +327,7 @@ namespace XingyaoPerf
         void RenderCompact(Bitmap bmp, Font f, float k, float rowH, float rad, float col, float y1, float y2, Snapshot s, bool light)
         {
             float use = CompactUseW * k, xPower = use + col, xRight = xPower + PowerW * k + col, pw = PowerW * k;
-            int n = 0, sum = 0;
-            if (s.Fan0 >= 0) { sum += s.Fan0; n++; }
-            if (s.Fan1 >= 0) { sum += s.Fan1; n++; }
-            double fan = n == 0 ? double.NaN : (double)sum / n;
+            double fan = FanMean(s);
             double netScale = NetScale();
             using (var g = Graphics.FromImage(bmp))
             using (var center = new StringFormat { Alignment = StringAlignment.Center, LineAlignment = StringAlignment.Center, FormatFlags = StringFormatFlags.NoWrap | StringFormatFlags.NoClip, Trimming = StringTrimming.None })
@@ -334,13 +335,29 @@ namespace XingyaoPerf
                 g.Clear(Color.FromArgb(1, 0, 0, 0)); // clickable, see Render
                 g.SmoothingMode = SmoothingMode.AntiAlias;
                 g.TextRenderingHint = TextRenderingHint.AntiAliasGridFit;
-                Graph(g, f, center, new RectangleF(0, y1, use, rowH), rad, CpuLine, hCpu, 100, null, Num(s.CpuGhz, "0.0") + " GHz");
-                Graph(g, f, center, new RectangleF(0, y2, use, rowH), rad, GpuLine, hGpu, 100, null, Num(s.GpuMhz / 1000, "0.00") + " GHz");
-                Graph(g, f, center, new RectangleF(xPower, y1, pw, rowH), rad, MemLine, hMem, 100, null, Num(s.PkgW, "0.0") + " W");
-                Graph(g, f, center, new RectangleF(xPower, y2, pw, rowH), rad, NetLine, hIn, netScale, hOut, SecondPower(s));
-                Bar(g, f, center, new RectangleF(xRight, y1, CompactRightW * k, rowH), rad, (s.TempC - TempMin) / (TempMax - TempMin), Level(s.TempC, 80, 90), Num(s.TempC, "0") + " °C");
-                Bar(g, f, center, new RectangleF(xRight, y2, CompactRightW * k, rowH), rad, fan / FanMax, Level(fan, 5000, 6500), Num(fan, "0") + " rpm");
+                Graph(g, f, center, new RectangleF(0, y1, use, rowH), rad, CpuLine, hCpu, 0, 100, null, Num(s.CpuGhz, "0.0") + " GHz");
+                Graph(g, f, center, new RectangleF(0, y2, use, rowH), rad, GpuLine, hGpu, 0, 100, null, Num(s.GpuMhz / 1000, "0.00") + " GHz");
+                Graph(g, f, center, new RectangleF(xPower, y1, pw, rowH), rad, MemLine, hMem, 0, 100, null, Num(s.PkgW, "0.0") + " W");
+                Graph(g, f, center, new RectangleF(xPower, y2, pw, rowH), rad, NetLine, hIn, 0, netScale, hOut, SecondPower(s));
+                Graph(g, f, center, new RectangleF(xRight, y1, CompactRightW * k, rowH), rad, TempColor(s), hTemp, TempMin, TempMax, null, Num(s.TempC, "0") + " °C");
+                Graph(g, f, center, new RectangleF(xRight, y2, CompactRightW * k, rowH), rad, FanLine, hFan, 0, FanMax, null, Num(fan, "0") + " rpm");
             }
+        }
+
+        static double FanMean(Snapshot s)
+        {
+            int n = 0, sum = 0;
+            if (s.Fan0 >= 0) { sum += s.Fan0; n++; }
+            if (s.Fan1 >= 0) { sum += s.Fan1; n++; }
+            return n == 0 ? double.NaN : (double)sum / n;
+        }
+
+        // Green, orange or red by the current temperature; grey while it cannot be read.
+        static Color TempColor(Snapshot s)
+        {
+            if (double.IsNaN(s.TempC)) return Color.Gray;
+            var c = Level(s.TempC, 80, 90);
+            return Color.FromArgb(Math.Min(255, c.R + 40), Math.Min(255, c.G + 40), Math.Min(255, c.B + 40));
         }
 
         // The GPU power, or on battery the whole laptop's power marked with a sigma.
@@ -364,7 +381,7 @@ namespace XingyaoPerf
 
         // A history graph across the box: the oldest sample at the left, the newest at the right edge.
         // The main series is a filled area with a line on top; the optional second one is a dashed line.
-        void Graph(Graphics g, Font f, StringFormat center, RectangleF r, float rad, Color line, double[] main, double scale, double[] second, string text)
+        void Graph(Graphics g, Font f, StringFormat center, RectangleF r, float rad, Color line, double[] main, double min, double max, double[] second, string text)
         {
             using (var path = Rounded(r, rad))
             using (var track = new SolidBrush(currentTrack))
@@ -372,7 +389,7 @@ namespace XingyaoPerf
                 g.FillPath(track, path);
                 var state = g.Save();
                 g.SetClip(path);
-                var pts = Points(r, main, scale);
+                var pts = Points(r, main, min, max);
                 if (pts != null)
                 {
                     var area = new PointF[pts.Length + 2];
@@ -382,7 +399,7 @@ namespace XingyaoPerf
                     using (var fill = new SolidBrush(Color.FromArgb(110, line))) g.FillPolygon(fill, area);
                     using (var pen = new Pen(line, Math.Max(1f, r.Height / 20))) g.DrawLines(pen, pts);
                 }
-                var pts2 = second == null ? null : Points(r, second, scale);
+                var pts2 = second == null ? null : Points(r, second, min, max);
                 if (pts2 != null)
                     using (var pen = new Pen(line, Math.Max(1f, r.Height / 20)) { DashStyle = DashStyle.Dash }) g.DrawLines(pen, pts2);
                 g.Restore(state);
@@ -391,7 +408,7 @@ namespace XingyaoPerf
         }
 
         // Points for the samples so far; a missing reading draws as zero. Null until there are two samples.
-        PointF[] Points(RectangleF r, double[] ring, double scale)
+        PointF[] Points(RectangleF r, double[] ring, double min, double max)
         {
             if (histCount < 2) return null;
             var pts = new PointF[histCount];
@@ -399,8 +416,8 @@ namespace XingyaoPerf
             for (int i = 0; i < histCount; i++)
             {
                 double v = ring[(histNext - histCount + i + Hist) % Hist];
-                if (double.IsNaN(v)) v = 0;
-                float y = r.Bottom - 1 - (float)Math.Min(1.0, v / scale) * (r.Height - 2);
+                double frac = double.IsNaN(v) ? 0 : Math.Max(0, Math.Min(1, (v - min) / (max - min)));
+                float y = r.Bottom - 1 - (float)frac * (r.Height - 2);
                 pts[i] = new PointF(r.Right - (histCount - 1 - i) * step, y);
             }
             return pts;
