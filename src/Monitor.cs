@@ -104,7 +104,7 @@ namespace XingyaoPerf
         public const int FanQuietLevel = -1;
         public int FanPercent { get { return fanQuiet ? FanQuietLevel : fanPercent; } }
 
-        // Quiet mode has three stages: fans stopped, a low stage that holds both fans near QuietLowRpm, and the EC curve.
+        // Quiet mode has three stages: fans stopped, a low stage at a fixed QuietLowPercent, and the EC curve.
         // The package sensor jumps by 20 C from one second to the next at idle, so changes use averages over several
         // samples (about a second each), with single-reading and power limits as backstops.
         // A small warm-up moves from stopped to low; only a warm-up the low stage cannot hold goes to the EC.
@@ -113,16 +113,15 @@ namespace XingyaoPerf
         const double QuietLowC = 67, QuietLowSpikeC = 82, QuietLowW = 22;   // stopped -> low: 5-sample temp, one reading, 10-sample power
         const double QuietEcC = 75, QuietEcSpikeC = 85, QuietEcW = 30;      // low or stopped -> EC, same windows
         const double QuietTakeC = 65, QuietTakeW = 18;                      // EC -> low: 20-sample averages
-        const int QuietLowRpm = 2500;
+        const int QuietLowPercent = 30; // the lowest manual speed in the fan menu, about 2500-3000 rpm
         const int QuietWindow = 30, QuietBackWindow = 5, QuietBackPowerWindow = 10, QuietTakeWindow = 20;
         // QuietMinOn samples on the EC before taking back, QuietMinLow in the low stage before stopping.
-        const int QuietMinOn = 45, QuietMinLow = 30, QuietSettle = 8, QuietStepEvery = 3, StallSeconds = 5;
+        const int QuietMinOn = 45, QuietMinLow = 30, StallSeconds = 5;
         volatile bool fanQuiet;
         volatile int quietState; // QuietEc, QuietLow or QuietOff
         bool FanHeld { get { return quietState != QuietEc; } }
         int quietCool; // samples since the quiet logic last changed state
         int quietHold = QuietWindow; // samples needed on the EC before the next step: a window at start, QuietMinOn after a hand-back
-        int quietPwm, quietSlow; // low stage: current D6 value, samples with the fans too slow or unreadable
         readonly double[] quietTemps = new double[QuietWindow], quietPowers = new double[QuietWindow];
         int quietNext;
         DateTime lastSampleAt = DateTime.UtcNow;
@@ -347,8 +346,7 @@ namespace XingyaoPerf
 
             if (quietState == QuietLow)
             {
-                KeepLowSpeed(s);
-                if (quietState == QuietLow && quietCool >= QuietMinLow) TryStop();
+                if (quietCool >= QuietMinLow) TryStop();
                 return;
             }
 
@@ -370,33 +368,10 @@ namespace XingyaoPerf
 
         void QuietToLow(string why)
         {
-            // About 25% the first time, then the last value that held the target; KeepLowSpeed trims it toward QuietLowRpm.
-            int pwm = quietPwm > 0 ? quietPwm : 64;
-            try { fans.SetFanPwm(pwm); }
+            try { fans.SetFanPercent(QuietLowPercent); }
             catch (Exception e) { Log.Write("quiet: low stage failed: " + e.Message); QuietBack("低速档写入失败"); return; }
-            quietPwm = pwm; quietSlow = 0; quietState = QuietLow; quietCool = 0;
-            Log.Write("quiet: fans low (" + why + "), D6 " + pwm);
-        }
-
-        // Low stage: nudge the shared PWM toward QuietLowRpm every few samples, once the fans have had time to settle.
-        // If the fans stay too slow at the highest allowed PWM, or cannot be read, the EC takes over.
-        void KeepLowSpeed(Snapshot s)
-        {
-            int n = 0, sum = 0;
-            if (s.Fan0 >= 0) { sum += s.Fan0; n++; }
-            if (s.Fan1 >= 0) { sum += s.Fan1; n++; }
-            if (quietCool < QuietSettle) return;
-            if (n == 0 || sum / n < 800)
-            {
-                if (++quietSlow >= 8 && (n == 0 || quietPwm >= FanReader.QuietPwmMax)) { QuietBack(n == 0 ? "读不到转速" : "低速档风扇没转起来"); return; }
-            }
-            else quietSlow = 0;
-            if (n == 0 || quietCool % QuietStepEvery != 0) return;
-            int step = Math.Max(-4, Math.Min(4, (QuietLowRpm - sum / n) / 75));
-            int pwm = Math.Max(FanReader.QuietPwmMin, Math.Min(FanReader.QuietPwmMax, quietPwm + step));
-            if (pwm == quietPwm) return;
-            try { fans.SetFanPwm(pwm); quietPwm = pwm; }
-            catch (Exception e) { Log.Write("quiet: low stage failed: " + e.Message); QuietBack("低速档写入失败"); }
+            quietState = QuietLow; quietCool = 0;
+            Log.Write("quiet: fans low " + QuietLowPercent + "% (" + why + ")");
         }
 
         // Back to the EC curve while staying in quiet mode.
@@ -404,7 +379,7 @@ namespace XingyaoPerf
         {
             var f = fans;
             try { if (f != null) f.SetFanAuto(); } catch (Exception e) { Log.Write("quiet: back to EC failed: " + e.Message); return; }
-            Log.Write("quiet: fans back to EC (" + why + ")" + (quietState == QuietLow ? ", low stage was D6 " + quietPwm : ""));
+            Log.Write("quiet: fans back to EC (" + why + ")");
             quietState = QuietEc; quietCool = 0; quietHold = QuietMinOn;
         }
 

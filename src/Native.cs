@@ -50,6 +50,10 @@ namespace XingyaoPerf
         [DllImport("pdh.dll")] public static extern int PdhCloseQuery(IntPtr q);
         public const uint PDH_FMT_DOUBLE = 0x200;
 
+        [StructLayout(LayoutKind.Sequential)]
+        public struct MEMORYSTATUSEX { public uint Length, MemoryLoad; public ulong TotalPhys, AvailPhys, TotalPageFile, AvailPageFile, TotalVirtual, AvailVirtual, AvailExtendedVirtual; }
+        [DllImport("kernel32.dll", SetLastError = true)] public static extern bool GlobalMemoryStatusEx(ref MEMORYSTATUSEX m);
+
         // --- CPU topology ---
         [DllImport("kernel32.dll", SetLastError = true)] public static extern bool GetSystemCpuSetInformation(IntPtr info, uint len, out uint ret, IntPtr proc, uint flags);
     }

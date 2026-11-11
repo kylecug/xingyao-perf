@@ -424,8 +424,8 @@ namespace XingyaoPerf
         // Live values, then a hot example, on dark and light taskbars, followed by the three mode icons.
         static void SavePreview(string file, Snapshot live, bool compact)
         {
-            var hot = new Snapshot { CpuPct = 100, CpuGhz = 3.9, GpuPct = 96, PGhz = 4.2, EGhz = 3.8, LGhz = 2.1, PkgW = 52.3, GpuW = 22.4, TempC = 91, GpuMhz = 2100, Fan0 = 6900, Fan1 = 4800 };
-            var warm = new Snapshot { CpuPct = 76, CpuGhz = 3.0, GpuPct = 41, PGhz = 3.1, EGhz = 2.7, LGhz = 1.9, PkgW = 42.1, GpuW = 12.4, TempC = 83, GpuMhz = 1450, Fan0 = 5100, Fan1 = 3000 };
+            var hot = new Snapshot { CpuPct = 100, CpuGhz = 3.9, GpuPct = 96, PGhz = 4.2, EGhz = 3.8, LGhz = 2.1, PkgW = 52.3, GpuW = 22.4, TempC = 91, GpuMhz = 2100, MemPct = 71, NetIn = 2.5e6, NetOut = 2e5, Fan0 = 6900, Fan1 = 4800 };
+            var warm = new Snapshot { CpuPct = 76, CpuGhz = 3.0, GpuPct = 41, PGhz = 3.1, EGhz = 2.7, LGhz = 1.9, PkgW = 42.1, GpuW = 12.4, TempC = 83, GpuMhz = 1450, MemPct = 58, NetIn = 1e6, NetOut = 1e5, Fan0 = 5100, Fan1 = 3000 };
             const int H = 60;
             int w = Overlay.WidthFor(H, compact);
             var rows = new[] { live, warm, hot };
@@ -440,6 +440,12 @@ namespace XingyaoPerf
                     g.FillRectangle(light ? Brushes.WhiteSmoke : new SolidBrush(Color.FromArgb(32, 28, 28)), 0, t * (H + 6) * rows.Length, sheet.Width, (H + 6) * rows.Length);
                     for (int i = 0; i < rows.Length; i++)
                     {
+                        // A minute of made-up history, so the graphs show a curve.
+                        for (int j = 0; j < 59; j++)
+                        {
+                            double wave = 0.5 + 0.5 * Math.Sin(j / 6.0 + i);
+                            o.SetValues(new Snapshot { CpuPct = (rows[i].CpuPct + 5) * (0.3 + 0.7 * wave), GpuPct = (rows[i].GpuPct + 5) * wave, MemPct = 55 + 10 * wave, NetIn = 3e6 * wave * wave, NetOut = 4e5 * (1 - wave) });
+                        }
                         o.SetValues(rows[i]);
                         using (var bmp = o.Render(w, H, f, light, compact)) g.DrawImage(bmp, 6, (t * rows.Length + i) * (H + 6) + 3, w, H);
                         for (int m = 1; m <= 3; m++)
@@ -473,9 +479,9 @@ namespace XingyaoPerf
                 {
                     long t0 = sw.ElapsedMilliseconds;
                     last = m.SampleOnce();
-                    sb.AppendLine(string.Format("sample {0} ({1} ms): CPU {11}% GPU {12}%, P {2} E {3} L {4} GHz, pkg {5} W, {6} C, GPU {7} MHz {8} W, fans {9}/{10}",
+                    sb.AppendLine(string.Format("sample {0} ({1} ms): CPU {11}% GPU {12}%, P {2} E {3} L {4} GHz, pkg {5} W, {6} C, GPU {7} MHz {8} W, fans {9}/{10}, speed {13} GHz, memory {14}%, net in {15} out {16} B/s",
                         i, sw.ElapsedMilliseconds - t0, Overlay.Num(last.PGhz, "0.00"), Overlay.Num(last.EGhz, "0.00"), Overlay.Num(last.LGhz, "0.00"), Overlay.Num(last.PkgW, "0.0"),
-                        Overlay.Num(last.TempC, "0"), Overlay.Num(last.GpuMhz, "0"), Overlay.Num(last.GpuW, "0.0"), last.Fan0, last.Fan1, Overlay.Num(last.CpuPct, "0"), Overlay.Num(last.GpuPct, "0")));
+                        Overlay.Num(last.TempC, "0"), Overlay.Num(last.GpuMhz, "0"), Overlay.Num(last.GpuW, "0.0"), last.Fan0, last.Fan1, Overlay.Num(last.CpuPct, "0"), Overlay.Num(last.GpuPct, "0"), Overlay.Num(last.CpuGhz, "0.00"), Overlay.Num(last.MemPct, "0"), Overlay.Num(last.NetIn, "0"), Overlay.Num(last.NetOut, "0")));
                     Thread.Sleep(1000);
                 }
                 me.Refresh();

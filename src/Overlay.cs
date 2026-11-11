@@ -18,11 +18,13 @@ namespace XingyaoPerf
     //   CPU | 45% | P 4.2 | E 3.8 | L 2.1 | 39.9 W |       | 6506 rpm
     //   GPU | 80% |     2.10 GHz          | 22.4 W | 69 °C | 6282 rpm
     //
-    // The compact layout has no labels. Each usage bar is filled by usage and shows the frequency (CPU as
-    // Task Manager's "Speed"), then power, then temperature above the mean of the two fans:
+    // The compact layout has no labels. Like Task Manager, the first two columns are history graphs:
+    // CPU and GPU usage behind their frequencies (CPU as Task Manager's "Speed"), physical memory in use
+    // behind the package power, and network receive (solid) and send (dashed) behind the GPU power.
+    // The last column is the temperature above the mean of the two fans:
     //
-    //   [####    3.1 GHz ] | 39.9 W | 69 °C
-    //   [########  2.10 GHz] | 22.4 W | 4650 rpm
+    //   [cpu graph  3.1 GHz ] | [memory  39.9 W] | 69 °C
+    //   [gpu graph  2.10 GHz] | [network 22.4 W] | 4650 rpm
     //
     // Usage, frequency and power line up in columns. CPU and GPU share one package, so the
     // temperature spans both rows. The two fans are stacked but not tied to a row,
@@ -55,6 +57,12 @@ namespace XingyaoPerf
         static readonly Color TrackDark = Color.FromArgb(48, 255, 255, 255), TrackLight = Color.FromArgb(170, 30, 30, 30);
 
         Snapshot values = new Snapshot();
+
+        // Graph history, one entry per sample, newest at histNext - 1.
+        const int Hist = 60;
+        readonly double[] hCpu = new double[Hist], hGpu = new double[Hist], hMem = new double[Hist], hIn = new double[Hist], hOut = new double[Hist];
+        int histNext, histCount;
+        static readonly Color CpuLine = Color.FromArgb(60, 160, 230), GpuLine = Color.FromArgb(40, 190, 170), MemLine = Color.FromArgb(190, 110, 230), NetLine = Color.FromArgb(235, 150, 50);
         int lastH, lastX, lastY, width;
         bool lastLight;
         Font font;
@@ -113,7 +121,15 @@ namespace XingyaoPerf
 
         public static string Num(double v, string fmt) { return double.IsNaN(v) ? "--" : v.ToString(fmt, CultureInfo.InvariantCulture); }
 
-        public void SetValues(Snapshot s) { values = s; Redraw(); }
+        public void SetValues(Snapshot s)
+        {
+            values = s;
+            hCpu[histNext] = s.CpuPct; hGpu[histNext] = s.GpuPct; hMem[histNext] = s.MemPct; hIn[histNext] = s.NetIn; hOut[histNext] = s.NetOut;
+            histNext = (histNext + 1) % Hist;
+            if (histCount < Hist) histCount++;
+            drawn = null; // the graphs move with every sample
+            Redraw();
+        }
 
         static string Key(Snapshot s)
         {
@@ -267,7 +283,7 @@ namespace XingyaoPerf
             float xPct = LabelW * k, xFreq = xPct + (PctW + ColGap) * k, xPower = xFreq + freqAll + col, xTemp = xPower + PowerW * k + col, xFan = xTemp + TempW * k + col;
 
             var bmp = new Bitmap(w, h, PixelFormat.Format32bppArgb);
-            if (compact) { RenderCompact(bmp, f, k, rowH, rad, col, y1, y2, s); return bmp; }
+            if (compact) { RenderCompact(bmp, f, k, rowH, rad, col, y1, y2, s, light); return bmp; }
             using (var g = Graphics.FromImage(bmp))
             using (var label = new SolidBrush(light ? Color.FromArgb(40, 40, 40) : Color.FromArgb(225, 225, 225)))
             using (var center = new StringFormat { Alignment = StringAlignment.Center, LineAlignment = StringAlignment.Center, FormatFlags = StringFormatFlags.NoWrap | StringFormatFlags.NoClip, Trimming = StringTrimming.None })
@@ -300,26 +316,84 @@ namespace XingyaoPerf
             return bmp;
         }
 
-        static void RenderCompact(Bitmap bmp, Font f, float k, float rowH, float rad, float col, float y1, float y2, Snapshot s)
+        void RenderCompact(Bitmap bmp, Font f, float k, float rowH, float rad, float col, float y1, float y2, Snapshot s, bool light)
         {
-            float use = CompactUseW * k, xPower = use + col, xRight = xPower + PowerW * k + col;
+            float use = CompactUseW * k, xPower = use + col, xRight = xPower + PowerW * k + col, pw = PowerW * k;
             int n = 0, sum = 0;
             if (s.Fan0 >= 0) { sum += s.Fan0; n++; }
             if (s.Fan1 >= 0) { sum += s.Fan1; n++; }
             double fan = n == 0 ? double.NaN : (double)sum / n;
+            double netScale = NetScale();
             using (var g = Graphics.FromImage(bmp))
             using (var center = new StringFormat { Alignment = StringAlignment.Center, LineAlignment = StringAlignment.Center, FormatFlags = StringFormatFlags.NoWrap | StringFormatFlags.NoClip, Trimming = StringTrimming.None })
             {
                 g.Clear(Color.FromArgb(1, 0, 0, 0)); // clickable, see Render
                 g.SmoothingMode = SmoothingMode.AntiAlias;
                 g.TextRenderingHint = TextRenderingHint.AntiAliasGridFit;
-                Bar(g, f, center, new RectangleF(0, y1, use, rowH), rad, s.CpuPct / 100, Level(s.CpuPct, 70, 90), Num(s.CpuGhz, "0.0") + " GHz");
-                Bar(g, f, center, new RectangleF(0, y2, use, rowH), rad, s.GpuPct / 100, Level(s.GpuPct, 70, 90), Num(s.GpuMhz / 1000, "0.00") + " GHz");
-                Bar(g, f, center, new RectangleF(xPower, y1, PowerW * k, rowH), rad, s.PkgW / PkgWMax, Level(s.PkgW, 40, 50), Num(s.PkgW, "0.0") + " W");
-                Bar(g, f, center, new RectangleF(xPower, y2, PowerW * k, rowH), rad, s.GpuW / GpuWMax, Level(s.GpuW, 30, 38), Num(s.GpuW, "0.0") + " W");
+                Graph(g, f, center, new RectangleF(0, y1, use, rowH), rad, CpuLine, hCpu, 100, null, Num(s.CpuGhz, "0.0") + " GHz");
+                Graph(g, f, center, new RectangleF(0, y2, use, rowH), rad, GpuLine, hGpu, 100, null, Num(s.GpuMhz / 1000, "0.00") + " GHz");
+                Graph(g, f, center, new RectangleF(xPower, y1, pw, rowH), rad, MemLine, hMem, 100, null, Num(s.PkgW, "0.0") + " W");
+                Graph(g, f, center, new RectangleF(xPower, y2, pw, rowH), rad, NetLine, hIn, netScale, hOut, Num(s.GpuW, "0.0") + " W");
                 Bar(g, f, center, new RectangleF(xRight, y1, CompactRightW * k, rowH), rad, (s.TempC - TempMin) / (TempMax - TempMin), Level(s.TempC, 80, 90), Num(s.TempC, "0") + " °C");
                 Bar(g, f, center, new RectangleF(xRight, y2, CompactRightW * k, rowH), rad, fan / FanMax, Level(fan, 5000, 6500), Num(fan, "0") + " rpm");
             }
+        }
+
+        // Like Task Manager, the network graph scales to the busiest recent sample, rounded up to 1, 2 or 5 times a power of ten (at least 100 kbit/s).
+        double NetScale()
+        {
+            double top = 100e3 / 8;
+            for (int i = 0; i < histCount; i++)
+            {
+                if (hIn[i] > top) top = hIn[i];
+                if (hOut[i] > top) top = hOut[i];
+            }
+            double p = Math.Pow(10, Math.Floor(Math.Log10(top)));
+            return top <= p ? p : top <= 2 * p ? 2 * p : top <= 5 * p ? 5 * p : 10 * p;
+        }
+
+        // A history graph across the box: the oldest sample at the left, the newest at the right edge.
+        // The main series is a filled area with a line on top; the optional second one is a dashed line.
+        void Graph(Graphics g, Font f, StringFormat center, RectangleF r, float rad, Color line, double[] main, double scale, double[] second, string text)
+        {
+            using (var path = Rounded(r, rad))
+            using (var track = new SolidBrush(currentTrack))
+            {
+                g.FillPath(track, path);
+                var state = g.Save();
+                g.SetClip(path);
+                var pts = Points(r, main, scale);
+                if (pts != null)
+                {
+                    var area = new PointF[pts.Length + 2];
+                    pts.CopyTo(area, 0);
+                    area[pts.Length] = new PointF(pts[pts.Length - 1].X, r.Bottom);
+                    area[pts.Length + 1] = new PointF(pts[0].X, r.Bottom);
+                    using (var fill = new SolidBrush(Color.FromArgb(110, line))) g.FillPolygon(fill, area);
+                    using (var pen = new Pen(line, Math.Max(1f, r.Height / 20))) g.DrawLines(pen, pts);
+                }
+                var pts2 = second == null ? null : Points(r, second, scale);
+                if (pts2 != null)
+                    using (var pen = new Pen(line, Math.Max(1f, r.Height / 20)) { DashStyle = DashStyle.Dash }) g.DrawLines(pen, pts2);
+                g.Restore(state);
+                g.DrawString(text, f, Brushes.White, r, center);
+            }
+        }
+
+        // Points for the samples so far; a missing reading draws as zero. Null until there are two samples.
+        PointF[] Points(RectangleF r, double[] ring, double scale)
+        {
+            if (histCount < 2) return null;
+            var pts = new PointF[histCount];
+            float step = r.Width / (Hist - 1);
+            for (int i = 0; i < histCount; i++)
+            {
+                double v = ring[(histNext - histCount + i + Hist) % Hist];
+                if (double.IsNaN(v)) v = 0;
+                float y = r.Bottom - 1 - (float)Math.Min(1.0, v / scale) * (r.Height - 2);
+                pts[i] = new PointF(r.Right - (histCount - 1 - i) * step, y);
+            }
+            return pts;
         }
 
         void Redraw()

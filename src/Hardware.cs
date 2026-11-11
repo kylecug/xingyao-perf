@@ -196,15 +196,6 @@ namespace XingyaoPerf
             Locked(() => Send(0xd6, (byte)Math.Round(percent * 255.0 / 100), false));
         }
 
-        // Raw D6 value for the quiet mode's low stage, which holds the fans near 2500 rpm. Values under 30%
-        // were not tested with fan-test.ps1, so the quiet mode watches the speed and hands back to the EC if it misbehaves.
-        public void SetFanPwm(int pwm)
-        {
-            if (pwm < QuietPwmMin || pwm > QuietPwmMax) throw new ArgumentOutOfRangeException("pwm");
-            Locked(() => Send(0xd6, (byte)pwm, false));
-        }
-        public const int QuietPwmMin = 20, QuietPwmMax = 115;
-
         public void SetFanAuto() { Locked(() => Send(0xd5, 0x10, false)); }
 
         // D6 00: both fans stop. Used only by the quiet mode, which hands back to the EC as soon as it warms up.
@@ -446,7 +437,7 @@ namespace XingyaoPerf
     // Core frequencies and RAPL power from Windows performance counters.
     internal sealed class CounterSet : IDisposable
     {
-        readonly IntPtr q, pkg, gpu, cpuPct, cpuPerf, cpuBase, gpuEngines;
+        readonly IntPtr q, pkg, gpu, cpuPct, cpuPerf, cpuBase, gpuEngines, netIn, netOut;
         readonly List<IntPtr> p = new List<IntPtr>(), e = new List<IntPtr>(), l = new List<IntPtr>();
 
         public CounterSet()
@@ -458,6 +449,8 @@ namespace XingyaoPerf
             Check(Native.PdhAddEnglishCounter(q, @"\Processor Information(_Total)\% Processor Performance", IntPtr.Zero, out cpuPerf));
             Check(Native.PdhAddEnglishCounter(q, @"\Processor Information(_Total)\Processor Frequency", IntPtr.Zero, out cpuBase));
             Check(Native.PdhAddEnglishCounter(q, @"\GPU Engine(*)\Utilization Percentage", IntPtr.Zero, out gpuEngines));
+            Check(Native.PdhAddEnglishCounter(q, @"\Network Interface(*)\Bytes Received/sec", IntPtr.Zero, out netIn));
+            Check(Native.PdhAddEnglishCounter(q, @"\Network Interface(*)\Bytes Sent/sec", IntPtr.Zero, out netOut));
             foreach (var c in ReadTopology())
             {
                 IntPtr h;
@@ -503,38 +496,62 @@ namespace XingyaoPerf
             return n == 0 ? double.NaN : s / n / 1000.0;
         }
 
-        // Same approach as Task Manager: add up each engine type across processes, then take the busiest type.
-        double GpuBusyPercent()
+        // Calls back with each instance of a wildcard counter. False if the counter could not be read.
+        static bool EachInstance(IntPtr c, Action<string, double> each)
         {
             const int PDH_MORE_DATA = unchecked((int)0x800007D2);
             uint size = 0, count;
-            int r = Native.PdhGetFormattedCounterArray(gpuEngines, Native.PDH_FMT_DOUBLE, ref size, out count, IntPtr.Zero);
-            if (r != PDH_MORE_DATA || size == 0) return double.NaN;
+            int r = Native.PdhGetFormattedCounterArray(c, Native.PDH_FMT_DOUBLE, ref size, out count, IntPtr.Zero);
+            if (r != PDH_MORE_DATA || size == 0) return false;
             IntPtr mem = Marshal.AllocHGlobal((int)size);
             try
             {
-                r = Native.PdhGetFormattedCounterArray(gpuEngines, Native.PDH_FMT_DOUBLE, ref size, out count, mem);
-                if (r != 0) return double.NaN;
-                var byType = new Dictionary<string, double>();
+                r = Native.PdhGetFormattedCounterArray(c, Native.PDH_FMT_DOUBLE, ref size, out count, mem);
+                if (r != 0) return false;
                 int itemSize = IntPtr.Size + Marshal.SizeOf(typeof(Native.PDH_VALUE));
-                double top = 0;
                 for (int i = 0; i < count; i++)
                 {
                     IntPtr item = new IntPtr(mem.ToInt64() + i * itemSize);
                     string name = Marshal.PtrToStringUni(Marshal.ReadIntPtr(item));
                     var v = (Native.PDH_VALUE)Marshal.PtrToStructure(new IntPtr(item.ToInt64() + IntPtr.Size), typeof(Native.PDH_VALUE));
-                    if (name == null || v.Status != 0 && v.Status != 1) continue;
-                    int at = name.IndexOf("engtype_", StringComparison.Ordinal);
-                    string type = at < 0 ? name : name.Substring(at);
-                    double sum;
-                    byType.TryGetValue(type, out sum);
-                    sum += v.Value;
-                    byType[type] = sum;
-                    if (sum > top) top = sum;
+                    if (name != null && (v.Status == 0 || v.Status == 1)) each(name, v.Value);
                 }
-                return Math.Min(100, top);
+                return true;
             }
             finally { Marshal.FreeHGlobal(mem); }
+        }
+
+        // Same approach as Task Manager: add up each engine type across processes, then take the busiest type.
+        double GpuBusyPercent()
+        {
+            var byType = new Dictionary<string, double>();
+            double top = 0;
+            bool ok = EachInstance(gpuEngines, (name, value) =>
+            {
+                int at = name.IndexOf("engtype_", StringComparison.Ordinal);
+                string type = at < 0 ? name : name.Substring(at);
+                double sum;
+                byType.TryGetValue(type, out sum);
+                sum += value;
+                byType[type] = sum;
+                if (sum > top) top = sum;
+            });
+            return ok ? Math.Min(100, top) : double.NaN;
+        }
+
+        // Bytes per second over all network adapters.
+        static double Total(IntPtr c)
+        {
+            double sum = 0;
+            return EachInstance(c, (name, value) => sum += value) ? sum : double.NaN;
+        }
+
+        // Task Manager's memory "In use" share of physical memory.
+        static double MemoryPercent()
+        {
+            var m = new Native.MEMORYSTATUSEX { Length = (uint)Marshal.SizeOf(typeof(Native.MEMORYSTATUSEX)) };
+            if (!Native.GlobalMemoryStatusEx(ref m) || m.TotalPhys == 0) return double.NaN;
+            return 100.0 * (m.TotalPhys - m.AvailPhys) / m.TotalPhys;
         }
 
         public void Sample(Snapshot s)
@@ -546,6 +563,8 @@ namespace XingyaoPerf
             s.PGhz = Avg(p); s.EGhz = Avg(e); s.LGhz = Avg(l);
             s.CpuGhz = One(cpuBase) * One(cpuPerf) / 100 / 1000.0; // Task Manager's "Speed": base frequency times % performance
             s.PkgW = One(pkg) / 1000.0; s.GpuW = One(gpu) / 1000.0;
+            s.NetIn = Total(netIn); s.NetOut = Total(netOut);
+            s.MemPct = MemoryPercent();
         }
 
         public void Dispose() { Native.PdhCloseQuery(q); }
@@ -553,7 +572,7 @@ namespace XingyaoPerf
 
     internal sealed class Snapshot
     {
-        public double PGhz = double.NaN, EGhz = double.NaN, LGhz = double.NaN, PkgW = double.NaN, GpuW = double.NaN, TempC = double.NaN, GpuMhz = double.NaN, CpuPct = double.NaN, GpuPct = double.NaN, CpuGhz = double.NaN;
+        public double PGhz = double.NaN, EGhz = double.NaN, LGhz = double.NaN, PkgW = double.NaN, GpuW = double.NaN, TempC = double.NaN, GpuMhz = double.NaN, CpuPct = double.NaN, GpuPct = double.NaN, CpuGhz = double.NaN, MemPct = double.NaN, NetIn = double.NaN, NetOut = double.NaN;
         public int Fan0 = -1, Fan1 = -1, Mode;
     }
 }
