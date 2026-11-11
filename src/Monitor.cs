@@ -89,7 +89,7 @@ namespace XingyaoPerf
         readonly object modeGate = new object();
         DateTime restoreUntil;
 
-        CounterSet counters; FanReader fans; GpuFreq gpu; PackageTemp temp;
+        CounterSet counters; FanReader fans; GpuFreq gpu; PackageTemp temp; BatteryPower battery;
         int currentMode, fanFailures, fanPauseTicks, tempPauseTicks;
         public static bool SkipGpu; // --no-gpu: the frequency library is the largest memory user.
 
@@ -125,6 +125,7 @@ namespace XingyaoPerf
         readonly double[] quietTemps = new double[QuietWindow], quietPowers = new double[QuietWindow];
         int quietNext;
         DateTime lastSampleAt = DateTime.UtcNow;
+        int batteryPauseTicks;
         public Snapshot Latest { get { return latest; } }
         public int CurrentMode { get { return currentMode; } }
 
@@ -143,6 +144,7 @@ namespace XingyaoPerf
             Try("package temperature", () => temp = new PackageTemp());
             if (!SkipGpu) Try("gpu frequency", () => gpu = new GpuFreq());
             Try("fan reader", () => fans = new FanReader());
+            Try("battery power", () => battery = new BatteryPower());
         }
 
         static void Try(string what, Action a)
@@ -163,6 +165,11 @@ namespace XingyaoPerf
                     catch (Exception e) { Log.Write("temperature: " + e.Message); tempPauseTicks = 60; }
             }
             if (gpu != null) try { s.GpuMhz = gpu.ReadMhz(); } catch (Exception e) { Log.Write("gpu: " + e.Message); }
+            if (battery != null)
+            {
+                if (batteryPauseTicks > 0) batteryPauseTicks--;
+                else try { s.SysW = battery.Read(); } catch (Exception e) { Log.Write("battery power: " + e.Message); batteryPauseTicks = 60; }
+            }
             if (fans != null)
             {
                 if (fanPauseTicks > 0) fanPauseTicks--;

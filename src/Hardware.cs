@@ -570,9 +570,30 @@ namespace XingyaoPerf
         public void Dispose() { Native.PdhCloseQuery(q); }
     }
 
+    // Whole-laptop power while on battery: the battery's discharge rate. On AC there is no such reading
+    // (no platform power counter on this machine, and the battery reads 0 while full or held at the charge limit).
+    internal sealed class BatteryPower : IDisposable
+    {
+        readonly ManagementObjectSearcher searcher = new ManagementObjectSearcher(@"root\wmi", "SELECT Discharging, DischargeRate FROM BatteryStatus");
+
+        // Watts, or NaN on AC or when not discharging.
+        public double Read()
+        {
+            if (System.Windows.Forms.SystemInformation.PowerStatus.PowerLineStatus != System.Windows.Forms.PowerLineStatus.Offline) return double.NaN;
+            double mw = 0; bool any = false;
+            using (var all = searcher.Get())
+                foreach (ManagementObject o in all)
+                    using (o)
+                        if (o["Discharging"] is bool && (bool)o["Discharging"]) { mw += Convert.ToDouble(o["DischargeRate"]); any = true; }
+            return any && mw > 0 ? mw / 1000.0 : double.NaN;
+        }
+
+        public void Dispose() { searcher.Dispose(); }
+    }
+
     internal sealed class Snapshot
     {
-        public double PGhz = double.NaN, EGhz = double.NaN, LGhz = double.NaN, PkgW = double.NaN, GpuW = double.NaN, TempC = double.NaN, GpuMhz = double.NaN, CpuPct = double.NaN, GpuPct = double.NaN, CpuGhz = double.NaN, MemPct = double.NaN, NetIn = double.NaN, NetOut = double.NaN;
+        public double PGhz = double.NaN, EGhz = double.NaN, LGhz = double.NaN, PkgW = double.NaN, GpuW = double.NaN, TempC = double.NaN, GpuMhz = double.NaN, CpuPct = double.NaN, GpuPct = double.NaN, CpuGhz = double.NaN, MemPct = double.NaN, NetIn = double.NaN, NetOut = double.NaN, SysW = double.NaN;
         public int Fan0 = -1, Fan1 = -1, Mode;
     }
 }

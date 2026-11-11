@@ -424,7 +424,7 @@ namespace XingyaoPerf
         // Live values, then a hot example, on dark and light taskbars, followed by the three mode icons.
         static void SavePreview(string file, Snapshot live, bool compact)
         {
-            var hot = new Snapshot { CpuPct = 100, CpuGhz = 3.9, GpuPct = 96, PGhz = 4.2, EGhz = 3.8, LGhz = 2.1, PkgW = 52.3, GpuW = 22.4, TempC = 91, GpuMhz = 2100, MemPct = 71, NetIn = 2.5e6, NetOut = 2e5, Fan0 = 6900, Fan1 = 4800 };
+            var hot = new Snapshot { CpuPct = 100, CpuGhz = 3.9, GpuPct = 96, PGhz = 4.2, EGhz = 3.8, LGhz = 2.1, PkgW = 52.3, GpuW = 22.4, TempC = 91, GpuMhz = 2100, SysW = 68.4, MemPct = 71, NetIn = 2.5e6, NetOut = 2e5, Fan0 = 6900, Fan1 = 4800 };
             var warm = new Snapshot { CpuPct = 76, CpuGhz = 3.0, GpuPct = 41, PGhz = 3.1, EGhz = 2.7, LGhz = 1.9, PkgW = 42.1, GpuW = 12.4, TempC = 83, GpuMhz = 1450, MemPct = 58, NetIn = 1e6, NetOut = 1e5, Fan0 = 5100, Fan1 = 3000 };
             const int H = 60;
             int w = Overlay.WidthFor(H, compact);

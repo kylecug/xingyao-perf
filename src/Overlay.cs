@@ -18,6 +18,10 @@ namespace XingyaoPerf
     //   CPU | 45% | P 4.2 | E 3.8 | L 2.1 | 39.9 W |       | 6506 rpm
     //   GPU | 80% |     2.10 GHz          | 22.4 W | 69 °C | 6282 rpm
     //
+    // Usage and power boxes are Task Manager style history graphs: CPU and GPU usage behind the percentages,
+    // physical memory in use behind the package power, network receive (solid) and send (dashed) behind
+    // the GPU power. On battery the GPU power is replaced by the whole laptop's power, marked with a sigma.
+    //
     // The compact layout has no labels. Like Task Manager, the first two columns are history graphs:
     // CPU and GPU usage behind their frequencies (CPU as Task Manager's "Speed"), physical memory in use
     // behind the package power, and network receive (solid) and send (dashed) behind the GPU power.
@@ -133,7 +137,7 @@ namespace XingyaoPerf
 
         static string Key(Snapshot s)
         {
-            return Num(s.CpuPct, "0") + "|" + Num(s.GpuPct, "0") + "|" + Num(s.PGhz, "0.0") + Num(s.CpuGhz, "0.0") + Num(s.EGhz, "0.0") + Num(s.LGhz, "0.0") + "|" + Num(s.PkgW, "0.0") + "|" + Num(s.TempC, "0") + "|" + Num(s.GpuMhz, "0") + "|" + Num(s.GpuW, "0.0") + "|" + s.Fan0 + "|" + s.Fan1;
+            return Num(s.CpuPct, "0") + "|" + Num(s.GpuPct, "0") + "|" + Num(s.PGhz, "0.0") + Num(s.CpuGhz, "0.0") + Num(s.EGhz, "0.0") + Num(s.LGhz, "0.0") + "|" + Num(s.PkgW, "0.0") + "|" + Num(s.TempC, "0") + "|" + Num(s.GpuMhz, "0") + "|" + Num(s.GpuW, "0.0") + "|" + s.Fan0 + "|" + s.Fan1 + "|" + Num(s.SysW, "0.0");
         }
 
         public static int WidthFor(int h, bool compact)
@@ -297,16 +301,16 @@ namespace XingyaoPerf
                 g.DrawString("CPU", f, label, new RectangleF(0, y1, xPct, rowH), left);
                 g.DrawString("GPU", f, label, new RectangleF(0, y2, xPct, rowH), left);
 
-                Bar(g, f, center, new RectangleF(xPct, y1, PctW * k, rowH), rad, s.CpuPct / 100, Level(s.CpuPct, 70, 90), Num(s.CpuPct, "0") + "%");
-                Bar(g, f, center, new RectangleF(xPct, y2, PctW * k, rowH), rad, s.GpuPct / 100, Level(s.GpuPct, 70, 90), Num(s.GpuPct, "0") + "%");
+                Graph(g, f, center, new RectangleF(xPct, y1, PctW * k, rowH), rad, CpuLine, hCpu, 100, null, Num(s.CpuPct, "0") + "%");
+                Graph(g, f, center, new RectangleF(xPct, y2, PctW * k, rowH), rad, GpuLine, hGpu, 100, null, Num(s.GpuPct, "0") + "%");
 
                 Bar(g, f, center, new RectangleF(xFreq, y1, freqW, rowH), rad, s.PGhz / CpuGhzMax, Freq, "P " + Num(s.PGhz, "0.0"));
                 Bar(g, f, center, new RectangleF(xFreq + freqW + inner, y1, freqW, rowH), rad, s.EGhz / CpuGhzMax, Freq, "E " + Num(s.EGhz, "0.0"));
                 Bar(g, f, center, new RectangleF(xFreq + (freqW + inner) * 2, y1, freqW, rowH), rad, s.LGhz / CpuGhzMax, Freq, "L " + Num(s.LGhz, "0.0"));
                 Bar(g, f, center, new RectangleF(xFreq, y2, freqAll, rowH), rad, s.GpuMhz / 1000 / GpuGhzMax, Freq, Num(s.GpuMhz / 1000, "0.00") + " GHz");
 
-                Bar(g, f, center, new RectangleF(xPower, y1, PowerW * k, rowH), rad, s.PkgW / PkgWMax, Level(s.PkgW, 40, 50), Num(s.PkgW, "0.0") + " W");
-                Bar(g, f, center, new RectangleF(xPower, y2, PowerW * k, rowH), rad, s.GpuW / GpuWMax, Level(s.GpuW, 30, 38), Num(s.GpuW, "0.0") + " W");
+                Graph(g, f, center, new RectangleF(xPower, y1, PowerW * k, rowH), rad, MemLine, hMem, 100, null, Num(s.PkgW, "0.0") + " W");
+                Graph(g, f, center, new RectangleF(xPower, y2, PowerW * k, rowH), rad, NetLine, hIn, NetScale(), hOut, SecondPower(s));
 
                 Bar(g, f, center, new RectangleF(xTemp, y1, TempW * k, rowH * 2 + gap), rad, (s.TempC - TempMin) / (TempMax - TempMin), Level(s.TempC, 80, 90), Num(s.TempC, "0") + " °C");
 
@@ -333,10 +337,16 @@ namespace XingyaoPerf
                 Graph(g, f, center, new RectangleF(0, y1, use, rowH), rad, CpuLine, hCpu, 100, null, Num(s.CpuGhz, "0.0") + " GHz");
                 Graph(g, f, center, new RectangleF(0, y2, use, rowH), rad, GpuLine, hGpu, 100, null, Num(s.GpuMhz / 1000, "0.00") + " GHz");
                 Graph(g, f, center, new RectangleF(xPower, y1, pw, rowH), rad, MemLine, hMem, 100, null, Num(s.PkgW, "0.0") + " W");
-                Graph(g, f, center, new RectangleF(xPower, y2, pw, rowH), rad, NetLine, hIn, netScale, hOut, Num(s.GpuW, "0.0") + " W");
+                Graph(g, f, center, new RectangleF(xPower, y2, pw, rowH), rad, NetLine, hIn, netScale, hOut, SecondPower(s));
                 Bar(g, f, center, new RectangleF(xRight, y1, CompactRightW * k, rowH), rad, (s.TempC - TempMin) / (TempMax - TempMin), Level(s.TempC, 80, 90), Num(s.TempC, "0") + " °C");
                 Bar(g, f, center, new RectangleF(xRight, y2, CompactRightW * k, rowH), rad, fan / FanMax, Level(fan, 5000, 6500), Num(fan, "0") + " rpm");
             }
+        }
+
+        // The GPU power, or on battery the whole laptop's power marked with a sigma.
+        static string SecondPower(Snapshot s)
+        {
+            return double.IsNaN(s.SysW) ? Num(s.GpuW, "0.0") + " W" : "\u03a3" + Num(s.SysW, s.SysW >= 10 ? "0" : "0.0") + " W";
         }
 
         // Like Task Manager, the network graph scales to the busiest recent sample, rounded up to 1, 2 or 5 times a power of ten (at least 100 kbit/s).
