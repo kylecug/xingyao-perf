@@ -4,12 +4,12 @@ Tiny tray app for one laptop: MECHREVO Xingyao 14, board `XINGYAO Series-P916F-P
 
 Protocol details and test results are in `docs/protocol.md`.
 
-Version: `src/Version.cs` and `src/app.manifest` (currently 0.9.10). Commit, push to `main` and tag every change without waiting to be asked (the user's standing request); bump both files on each commit and tag it `vX.Y.Z`.
+Version: `src/Version.cs` and `src/app.manifest` (currently 0.9.11). Commit, push to `main` and tag every change without waiting to be asked (the user's standing request); bump both files on each commit and tag it `vX.Y.Z`.
 
 ## Safety
 
 - Writing to firmware or the EC can harm the machine. Only send commands already verified in `docs/protocol.md`, and tell the user before anything new.
-- Fan writes `D6` (shared PWM) and `D5 10` (auto) are verified here with `scripts/fan-test.ps1` and used by the tray fan menu (30-100%, with hand-back to the EC at 85 C, unreadable temperature, sleep, exit and start); `D7`/`D8` are untested.
+- Fan writes `D6` (shared PWM) and `D5 10` (auto) are verified here with `scripts/fan-test.ps1` and used by the tray fan menu (30-100%, with hand-back to the EC at 85 C, unreadable temperature, sleep, exit and start); `D7`/`D8` are untested. The quiet mode's low stage sends `D6` values 20-115 (8-45%) to hold about 2500 rpm; values under 30% are untested here, and it hands back to the EC if the fans stay under 800 rpm or cannot be read.
 - Claude Code runs without admin rights. Anything needing admin must be run by the user in their own administrator window; sending keystrokes to that window is blocked by Windows.
 
 ## Status (2026-11-09)

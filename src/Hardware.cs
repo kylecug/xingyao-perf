@@ -196,6 +196,15 @@ namespace XingyaoPerf
             Locked(() => Send(0xd6, (byte)Math.Round(percent * 255.0 / 100), false));
         }
 
+        // Raw D6 value for the quiet mode's low stage, which holds the fans near 2500 rpm. Values under 30%
+        // were not tested with fan-test.ps1, so the quiet mode watches the speed and hands back to the EC if it misbehaves.
+        public void SetFanPwm(int pwm)
+        {
+            if (pwm < QuietPwmMin || pwm > QuietPwmMax) throw new ArgumentOutOfRangeException("pwm");
+            Locked(() => Send(0xd6, (byte)pwm, false));
+        }
+        public const int QuietPwmMin = 20, QuietPwmMax = 115;
+
         public void SetFanAuto() { Locked(() => Send(0xd5, 0x10, false)); }
 
         // D6 00: both fans stop. Used only by the quiet mode, which hands back to the EC as soon as it warms up.
@@ -437,7 +446,7 @@ namespace XingyaoPerf
     // Core frequencies and RAPL power from Windows performance counters.
     internal sealed class CounterSet : IDisposable
     {
-        readonly IntPtr q, pkg, gpu, cpuPct, gpuEngines;
+        readonly IntPtr q, pkg, gpu, cpuPct, cpuPerf, cpuBase, gpuEngines;
         readonly List<IntPtr> p = new List<IntPtr>(), e = new List<IntPtr>(), l = new List<IntPtr>();
 
         public CounterSet()
@@ -446,6 +455,8 @@ namespace XingyaoPerf
             Check(Native.PdhAddEnglishCounter(q, @"\Energy Meter(rapl_package0_pkg)\Power", IntPtr.Zero, out pkg));
             Check(Native.PdhAddEnglishCounter(q, @"\Energy Meter(rapl_package0_pp1)\Power", IntPtr.Zero, out gpu));
             Check(Native.PdhAddEnglishCounter(q, @"\Processor Information(_Total)\% Processor Utility", IntPtr.Zero, out cpuPct));
+            Check(Native.PdhAddEnglishCounter(q, @"\Processor Information(_Total)\% Processor Performance", IntPtr.Zero, out cpuPerf));
+            Check(Native.PdhAddEnglishCounter(q, @"\Processor Information(_Total)\Processor Frequency", IntPtr.Zero, out cpuBase));
             Check(Native.PdhAddEnglishCounter(q, @"\GPU Engine(*)\Utilization Percentage", IntPtr.Zero, out gpuEngines));
             foreach (var c in ReadTopology())
             {
@@ -533,6 +544,7 @@ namespace XingyaoPerf
             s.CpuPct = double.IsNaN(c) ? c : Math.Min(100, c);
             s.GpuPct = GpuBusyPercent();
             s.PGhz = Avg(p); s.EGhz = Avg(e); s.LGhz = Avg(l);
+            s.CpuGhz = One(cpuBase) * One(cpuPerf) / 100 / 1000.0; // Task Manager's "Speed": base frequency times % performance
             s.PkgW = One(pkg) / 1000.0; s.GpuW = One(gpu) / 1000.0;
         }
 
@@ -541,7 +553,7 @@ namespace XingyaoPerf
 
     internal sealed class Snapshot
     {
-        public double PGhz = double.NaN, EGhz = double.NaN, LGhz = double.NaN, PkgW = double.NaN, GpuW = double.NaN, TempC = double.NaN, GpuMhz = double.NaN, CpuPct = double.NaN, GpuPct = double.NaN;
+        public double PGhz = double.NaN, EGhz = double.NaN, LGhz = double.NaN, PkgW = double.NaN, GpuW = double.NaN, TempC = double.NaN, GpuMhz = double.NaN, CpuPct = double.NaN, GpuPct = double.NaN, CpuGhz = double.NaN;
         public int Fan0 = -1, Fan1 = -1, Mode;
     }
 }

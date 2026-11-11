@@ -104,17 +104,25 @@ namespace XingyaoPerf
         public const int FanQuietLevel = -1;
         public int FanPercent { get { return fanQuiet ? FanQuietLevel : fanPercent; } }
 
-        // Quiet mode: the fans stop once the package has been cool and lightly loaded for a while, and go back
-        // to the EC curve the moment it warms up. The package sensor jumps by 20 C from one second to the next
-        // at idle, so stopping uses 30-second averages and going back a 5-second average, with a single-reading
-        // limit and a 10-second power average as backstops.
-        const double QuietOffC = 55, QuietOffW = 13, QuietBackC = 65, QuietBackSpikeC = 80, QuietBackW = 20;
-        // With the fans stopped at 5-7 W the package settles around 55-60 C, so stopping at 55 and coming back at 65
-        // keeps light use quiet. After coming back the fans run at least QuietMinOn samples (about 2 minutes).
-        const int QuietWindow = 30, QuietBackWindow = 5, QuietBackPowerWindow = 10, QuietMinOn = 120, StallSeconds = 5;
-        volatile bool fanQuiet, fanStopped;
+        // Quiet mode has three stages: fans stopped, a low stage that holds both fans near QuietLowRpm, and the EC curve.
+        // The package sensor jumps by 20 C from one second to the next at idle, so changes use averages over several
+        // samples (about a second each), with single-reading and power limits as backstops.
+        // A small warm-up moves from stopped to low; only a warm-up the low stage cannot hold goes to the EC.
+        const int QuietEc = 0, QuietLow = 1, QuietOff = 2;
+        const double QuietOffC = 57, QuietOffW = 14;                        // stop: 30-sample averages
+        const double QuietLowC = 67, QuietLowSpikeC = 82, QuietLowW = 22;   // stopped -> low: 5-sample temp, one reading, 10-sample power
+        const double QuietEcC = 75, QuietEcSpikeC = 85, QuietEcW = 30;      // low or stopped -> EC, same windows
+        const double QuietTakeC = 65, QuietTakeW = 18;                      // EC -> low: 20-sample averages
+        const int QuietLowRpm = 2500;
+        const int QuietWindow = 30, QuietBackWindow = 5, QuietBackPowerWindow = 10, QuietTakeWindow = 20;
+        // QuietMinOn samples on the EC before taking back, QuietMinLow in the low stage before stopping.
+        const int QuietMinOn = 45, QuietMinLow = 30, QuietSettle = 8, QuietStepEvery = 3, StallSeconds = 5;
+        volatile bool fanQuiet;
+        volatile int quietState; // QuietEc, QuietLow or QuietOff
+        bool FanHeld { get { return quietState != QuietEc; } }
         int quietCool; // samples since the quiet logic last changed state
-        int quietHold = QuietWindow; // samples needed before the fans may stop: a window at start, longer after coming back
+        int quietHold = QuietWindow; // samples needed on the EC before the next step: a window at start, QuietMinOn after a hand-back
+        int quietPwm, quietSlow; // low stage: current D6 value, samples with the fans too slow or unreadable
         readonly double[] quietTemps = new double[QuietWindow], quietPowers = new double[QuietWindow];
         int quietNext;
         DateTime lastSampleAt = DateTime.UtcNow;
@@ -264,13 +272,13 @@ namespace XingyaoPerf
             quietCool = 0;
             if (percent <= 0)
             {
-                f.SetFanAuto(); fanPercent = 0; fanStopped = false;
+                f.SetFanAuto(); fanPercent = 0; quietState = QuietEc;
                 fanQuiet = quiet;
                 Log.Write(quiet ? "fan quiet mode" : "fan auto");
                 return;
             }
             f.SetFanPercent(percent);
-            fanStopped = false;
+            quietState = QuietEc;
             fanPercent = percent;
             fanUnknownTemp = 0;
             Log.Write("fan manual " + percent + "%");
@@ -314,38 +322,90 @@ namespace XingyaoPerf
             quietTemps[quietNext] = t; quietPowers[quietNext] = w;
             quietNext = (quietNext + 1) % QuietWindow;
             quietCool++;
+            double t5 = Recent(quietTemps, QuietBackWindow), w10 = Recent(quietPowers, QuietBackPowerWindow);
 
-            if (fanStopped)
+            if (FanHeld)
             {
                 string why = null;
-                double recent = Recent(quietTemps, QuietBackWindow);
                 if (double.IsNaN(t)) why = "读不到温度";
-                else if (t >= QuietBackSpikeC) why = "温度 " + t.ToString("0") + " °C";
-                else if (recent >= QuietBackC) why = "5 秒平均温度 " + recent.ToString("0") + " °C";
-                else
-                {
-                    // A 10-second average, so the short single-core bursts of opening files (about 13 W) do not
-                    // start the fans, while sustained load such as a game does, before the package heats up.
-                    double rw = Recent(quietPowers, QuietBackPowerWindow);
-                    if (rw >= QuietBackW) why = "10 秒平均功耗 " + rw.ToString("0") + " W";
-                }
-                if (why != null) QuietBack(why);
+                else if (t >= QuietEcSpikeC) why = "温度 " + t.ToString("0") + " °C";
+                else if (t5 >= QuietEcC) why = "5 秒平均温度 " + t5.ToString("0") + " °C";
+                else if (w10 >= QuietEcW) why = "10 秒平均功耗 " + w10.ToString("0") + " W";
+                if (why != null) { QuietBack(why); return; }
+            }
+
+            if (quietState == QuietOff)
+            {
+                string why = null;
+                if (t >= QuietLowSpikeC) why = "温度 " + t.ToString("0") + " °C";
+                else if (t5 >= QuietLowC) why = "5 秒平均温度 " + t5.ToString("0") + " °C";
+                // A 10-second average, so the short single-core bursts of opening files (about 13 W) do not start the fans.
+                else if (w10 >= QuietLowW) why = "10 秒平均功耗 " + w10.ToString("0") + " W";
+                if (why != null) QuietToLow(why);
                 return;
             }
-            if (quietCool < quietHold) return; // a full window since start, longer since the fans last came back
+
+            if (quietState == QuietLow)
+            {
+                KeepLowSpeed(s);
+                if (quietState == QuietLow && quietCool >= QuietMinLow) TryStop();
+                return;
+            }
+
+            // On the EC curve: take the fans back once it has cooled, first to the low stage.
+            if (quietCool < quietHold) return;
+            if (quietHold == QuietWindow) { TryStop(); return; } // at start: straight to stopped if cool enough
+            double t20 = Recent(quietTemps, QuietTakeWindow), w20 = Recent(quietPowers, QuietTakeWindow);
+            if (double.IsNaN(t20) || double.IsNaN(w20) || t20 > QuietTakeC || w20 > QuietTakeW) return;
+            QuietToLow("20 秒平均 " + t20.ToString("0") + " °C, " + w20.ToString("0.0") + " W");
+        }
+
+        void TryStop()
+        {
             double avgT = Recent(quietTemps, QuietWindow), avgW = Recent(quietPowers, QuietWindow);
             if (double.IsNaN(avgT) || double.IsNaN(avgW) || avgT > QuietOffC || avgW > QuietOffW) return;
-            try { f.SetFanOff(); fanStopped = true; quietCool = 0; Log.Write("quiet: fans stopped, 30 s average " + avgT.ToString("0") + " C, " + avgW.ToString("0.0") + " W"); }
+            try { fans.SetFanOff(); quietState = QuietOff; quietCool = 0; Log.Write("quiet: fans stopped, 30 s average " + avgT.ToString("0") + " C, " + avgW.ToString("0.0") + " W"); }
             catch (Exception e) { Log.Write("quiet: stop failed: " + e.Message); }
         }
 
-        // Back to the EC curve while staying in quiet mode; the cool period starts over.
+        void QuietToLow(string why)
+        {
+            // About 25% the first time, then the last value that held the target; KeepLowSpeed trims it toward QuietLowRpm.
+            int pwm = quietPwm > 0 ? quietPwm : 64;
+            try { fans.SetFanPwm(pwm); }
+            catch (Exception e) { Log.Write("quiet: low stage failed: " + e.Message); QuietBack("低速档写入失败"); return; }
+            quietPwm = pwm; quietSlow = 0; quietState = QuietLow; quietCool = 0;
+            Log.Write("quiet: fans low (" + why + "), D6 " + pwm);
+        }
+
+        // Low stage: nudge the shared PWM toward QuietLowRpm every few samples, once the fans have had time to settle.
+        // If the fans stay too slow at the highest allowed PWM, or cannot be read, the EC takes over.
+        void KeepLowSpeed(Snapshot s)
+        {
+            int n = 0, sum = 0;
+            if (s.Fan0 >= 0) { sum += s.Fan0; n++; }
+            if (s.Fan1 >= 0) { sum += s.Fan1; n++; }
+            if (quietCool < QuietSettle) return;
+            if (n == 0 || sum / n < 800)
+            {
+                if (++quietSlow >= 8 && (n == 0 || quietPwm >= FanReader.QuietPwmMax)) { QuietBack(n == 0 ? "读不到转速" : "低速档风扇没转起来"); return; }
+            }
+            else quietSlow = 0;
+            if (n == 0 || quietCool % QuietStepEvery != 0) return;
+            int step = Math.Max(-4, Math.Min(4, (QuietLowRpm - sum / n) / 75));
+            int pwm = Math.Max(FanReader.QuietPwmMin, Math.Min(FanReader.QuietPwmMax, quietPwm + step));
+            if (pwm == quietPwm) return;
+            try { fans.SetFanPwm(pwm); quietPwm = pwm; }
+            catch (Exception e) { Log.Write("quiet: low stage failed: " + e.Message); QuietBack("低速档写入失败"); }
+        }
+
+        // Back to the EC curve while staying in quiet mode.
         void QuietBack(string why)
         {
             var f = fans;
             try { if (f != null) f.SetFanAuto(); } catch (Exception e) { Log.Write("quiet: back to EC failed: " + e.Message); return; }
-            fanStopped = false; quietCool = 0; quietHold = QuietMinOn;
-            Log.Write("quiet: fans back to EC (" + why + ")");
+            Log.Write("quiet: fans back to EC (" + why + ")" + (quietState == QuietLow ? ", low stage was D6 " + quietPwm : ""));
+            quietState = QuietEc; quietCool = 0; quietHold = QuietMinOn;
         }
 
         // The quiet mode also puts Windows on "Best power efficiency", and puts the previous mode back on leaving.
@@ -391,14 +451,14 @@ namespace XingyaoPerf
         // Called on the UI timer. If sampling stalls while the fans are stopped, give them back to the EC from here.
         public void Watchdog()
         {
-            if (fanStopped && (DateTime.UtcNow - lastSampleAt).TotalSeconds > StallSeconds) QuietBack("采样停止");
+            if (FanHeld && (DateTime.UtcNow - lastSampleAt).TotalSeconds > StallSeconds) QuietBack("采样停止");
         }
 
         // Before sleep the EC must own the fans again. Quiet mode stays on and starts over after waking.
         public void OnSuspend()
         {
             if (fanPercent > 0) ReleaseFan("睡眠");
-            if (fanStopped) QuietBack("睡眠");
+            if (FanHeld) QuietBack("睡眠");
         }
 
         // GPU frequency cap. The driver can drop it after a restart or driver update, so it is checked a few seconds after start and after waking.
@@ -476,7 +536,7 @@ namespace XingyaoPerf
         public void Dispose()
         {
             running = false;
-            if (fanPercent > 0 || fanStopped) try { fans.SetFanAuto(); fanPercent = 0; fanStopped = false; Log.Write("fan auto at exit"); } catch (Exception e) { Log.Write("fan auto at exit: " + e.Message); }
+            if (fanPercent > 0 || FanHeld) try { fans.SetFanAuto(); fanPercent = 0; quietState = QuietEc; Log.Write("fan auto at exit"); } catch (Exception e) { Log.Write("fan auto at exit: " + e.Message); }
             if (thread.IsAlive) thread.Join(5000);
             if (counters != null) counters.Dispose();
             if (fans != null) fans.Dispose();

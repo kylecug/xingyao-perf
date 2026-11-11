@@ -18,10 +18,11 @@ namespace XingyaoPerf
     //   CPU | 45% | P 4.2 | E 3.8 | L 2.1 | 39.9 W |       | 6506 rpm
     //   GPU | 80% |     2.10 GHz          | 22.4 W | 69 °C | 6282 rpm
     //
-    // The compact layout drops the E and LPE frequencies and the fans:
+    // The compact layout has no labels. Each usage bar is filled by usage and shows the frequency (CPU as
+    // Task Manager's "Speed"), then power, then temperature above the mean of the two fans:
     //
-    //   CPU | 45% | P 4.2    | 39.9 W |
-    //   GPU | 80% | 2.10 GHz | 22.4 W | 69 °C
+    //   [####    3.1 GHz ] | 39.9 W | 69 °C
+    //   [########  2.10 GHz] | 22.4 W | 4650 rpm
     //
     // Usage, frequency and power line up in columns. CPU and GPU share one package, so the
     // temperature spans both rows. The two fans are stacked but not tied to a row,
@@ -35,7 +36,7 @@ namespace XingyaoPerf
         // Layout in pixels for a 60 px tall taskbar, scaled to the real height.
         const float RowH = 26, RowGap = 3, Radius = 3, LabelW = 30, PctW = 40, FreqW = 45, InnerGap = 2, PowerW = 51, TempW = 44, FanW = 63, ColGap = 5;
 
-        const float CompactFreqW = 60;
+        const float CompactUseW = 72, CompactRightW = 72;
 
         // Room for the Windows weather button, which sits beside the tray when taskbar icons are left-aligned.
         // Used only when the probe cannot read the button's real position.
@@ -116,14 +117,14 @@ namespace XingyaoPerf
 
         static string Key(Snapshot s)
         {
-            return Num(s.CpuPct, "0") + "|" + Num(s.GpuPct, "0") + "|" + Num(s.PGhz, "0.0") + Num(s.EGhz, "0.0") + Num(s.LGhz, "0.0") + "|" + Num(s.PkgW, "0.0") + "|" + Num(s.TempC, "0") + "|" + Num(s.GpuMhz, "0") + "|" + Num(s.GpuW, "0.0") + "|" + s.Fan0 + "|" + s.Fan1;
+            return Num(s.CpuPct, "0") + "|" + Num(s.GpuPct, "0") + "|" + Num(s.PGhz, "0.0") + Num(s.CpuGhz, "0.0") + Num(s.EGhz, "0.0") + Num(s.LGhz, "0.0") + "|" + Num(s.PkgW, "0.0") + "|" + Num(s.TempC, "0") + "|" + Num(s.GpuMhz, "0") + "|" + Num(s.GpuW, "0.0") + "|" + s.Fan0 + "|" + s.Fan1;
         }
 
         public static int WidthFor(int h, bool compact)
         {
             float k = h / 60f;
             float units = compact
-                ? LabelW + PctW + ColGap + CompactFreqW + ColGap + PowerW + ColGap + TempW
+                ? CompactUseW + ColGap + PowerW + ColGap + CompactRightW
                 : LabelW + PctW + ColGap + FreqW * 3 + InnerGap * 2 + ColGap + PowerW + ColGap + TempW + ColGap + FanW;
             return (int)Math.Ceiling(k * units) + 2;
         }
@@ -262,10 +263,11 @@ namespace XingyaoPerf
             float k = h / 60f;
             float rowH = RowH * k, gap = RowGap * k, rad = Radius * k, inner = InnerGap * k, col = ColGap * k;
             float y1 = (h - rowH * 2 - gap) / 2, y2 = y1 + rowH + gap;
-            float freqW = FreqW * k, freqAll = compact ? CompactFreqW * k : freqW * 3 + inner * 2;
+            float freqW = FreqW * k, freqAll = freqW * 3 + inner * 2;
             float xPct = LabelW * k, xFreq = xPct + (PctW + ColGap) * k, xPower = xFreq + freqAll + col, xTemp = xPower + PowerW * k + col, xFan = xTemp + TempW * k + col;
 
             var bmp = new Bitmap(w, h, PixelFormat.Format32bppArgb);
+            if (compact) { RenderCompact(bmp, f, k, rowH, rad, col, y1, y2, s); return bmp; }
             using (var g = Graphics.FromImage(bmp))
             using (var label = new SolidBrush(light ? Color.FromArgb(40, 40, 40) : Color.FromArgb(225, 225, 225)))
             using (var center = new StringFormat { Alignment = StringAlignment.Center, LineAlignment = StringAlignment.Center, FormatFlags = StringFormatFlags.NoWrap | StringFormatFlags.NoClip, Trimming = StringTrimming.None })
@@ -282,14 +284,9 @@ namespace XingyaoPerf
                 Bar(g, f, center, new RectangleF(xPct, y1, PctW * k, rowH), rad, s.CpuPct / 100, Level(s.CpuPct, 70, 90), Num(s.CpuPct, "0") + "%");
                 Bar(g, f, center, new RectangleF(xPct, y2, PctW * k, rowH), rad, s.GpuPct / 100, Level(s.GpuPct, 70, 90), Num(s.GpuPct, "0") + "%");
 
-                if (compact)
-                    Bar(g, f, center, new RectangleF(xFreq, y1, freqAll, rowH), rad, s.PGhz / CpuGhzMax, Freq, "P " + Num(s.PGhz, "0.0"));
-                else
-                {
-                    Bar(g, f, center, new RectangleF(xFreq, y1, freqW, rowH), rad, s.PGhz / CpuGhzMax, Freq, "P " + Num(s.PGhz, "0.0"));
-                    Bar(g, f, center, new RectangleF(xFreq + freqW + inner, y1, freqW, rowH), rad, s.EGhz / CpuGhzMax, Freq, "E " + Num(s.EGhz, "0.0"));
-                    Bar(g, f, center, new RectangleF(xFreq + (freqW + inner) * 2, y1, freqW, rowH), rad, s.LGhz / CpuGhzMax, Freq, "L " + Num(s.LGhz, "0.0"));
-                }
+                Bar(g, f, center, new RectangleF(xFreq, y1, freqW, rowH), rad, s.PGhz / CpuGhzMax, Freq, "P " + Num(s.PGhz, "0.0"));
+                Bar(g, f, center, new RectangleF(xFreq + freqW + inner, y1, freqW, rowH), rad, s.EGhz / CpuGhzMax, Freq, "E " + Num(s.EGhz, "0.0"));
+                Bar(g, f, center, new RectangleF(xFreq + (freqW + inner) * 2, y1, freqW, rowH), rad, s.LGhz / CpuGhzMax, Freq, "L " + Num(s.LGhz, "0.0"));
                 Bar(g, f, center, new RectangleF(xFreq, y2, freqAll, rowH), rad, s.GpuMhz / 1000 / GpuGhzMax, Freq, Num(s.GpuMhz / 1000, "0.00") + " GHz");
 
                 Bar(g, f, center, new RectangleF(xPower, y1, PowerW * k, rowH), rad, s.PkgW / PkgWMax, Level(s.PkgW, 40, 50), Num(s.PkgW, "0.0") + " W");
@@ -297,11 +294,32 @@ namespace XingyaoPerf
 
                 Bar(g, f, center, new RectangleF(xTemp, y1, TempW * k, rowH * 2 + gap), rad, (s.TempC - TempMin) / (TempMax - TempMin), Level(s.TempC, 80, 90), Num(s.TempC, "0") + " °C");
 
-                if (compact) return bmp;
                 Bar(g, f, center, new RectangleF(xFan, y1, FanW * k, rowH), rad, s.Fan0 < 0 ? double.NaN : s.Fan0 / FanMax, Level(s.Fan0, 5000, 6500), (s.Fan0 < 0 ? "--" : s.Fan0.ToString()) + " rpm");
                 Bar(g, f, center, new RectangleF(xFan, y2, FanW * k, rowH), rad, s.Fan1 < 0 ? double.NaN : s.Fan1 / FanMax, Level(s.Fan1, 5000, 6500), (s.Fan1 < 0 ? "--" : s.Fan1.ToString()) + " rpm");
             }
             return bmp;
+        }
+
+        static void RenderCompact(Bitmap bmp, Font f, float k, float rowH, float rad, float col, float y1, float y2, Snapshot s)
+        {
+            float use = CompactUseW * k, xPower = use + col, xRight = xPower + PowerW * k + col;
+            int n = 0, sum = 0;
+            if (s.Fan0 >= 0) { sum += s.Fan0; n++; }
+            if (s.Fan1 >= 0) { sum += s.Fan1; n++; }
+            double fan = n == 0 ? double.NaN : (double)sum / n;
+            using (var g = Graphics.FromImage(bmp))
+            using (var center = new StringFormat { Alignment = StringAlignment.Center, LineAlignment = StringAlignment.Center, FormatFlags = StringFormatFlags.NoWrap | StringFormatFlags.NoClip, Trimming = StringTrimming.None })
+            {
+                g.Clear(Color.FromArgb(1, 0, 0, 0)); // clickable, see Render
+                g.SmoothingMode = SmoothingMode.AntiAlias;
+                g.TextRenderingHint = TextRenderingHint.AntiAliasGridFit;
+                Bar(g, f, center, new RectangleF(0, y1, use, rowH), rad, s.CpuPct / 100, Level(s.CpuPct, 70, 90), Num(s.CpuGhz, "0.0") + " GHz");
+                Bar(g, f, center, new RectangleF(0, y2, use, rowH), rad, s.GpuPct / 100, Level(s.GpuPct, 70, 90), Num(s.GpuMhz / 1000, "0.00") + " GHz");
+                Bar(g, f, center, new RectangleF(xPower, y1, PowerW * k, rowH), rad, s.PkgW / PkgWMax, Level(s.PkgW, 40, 50), Num(s.PkgW, "0.0") + " W");
+                Bar(g, f, center, new RectangleF(xPower, y2, PowerW * k, rowH), rad, s.GpuW / GpuWMax, Level(s.GpuW, 30, 38), Num(s.GpuW, "0.0") + " W");
+                Bar(g, f, center, new RectangleF(xRight, y1, CompactRightW * k, rowH), rad, (s.TempC - TempMin) / (TempMax - TempMin), Level(s.TempC, 80, 90), Num(s.TempC, "0") + " °C");
+                Bar(g, f, center, new RectangleF(xRight, y2, CompactRightW * k, rowH), rad, fan / FanMax, Level(fan, 5000, 6500), Num(fan, "0") + " rpm");
+            }
         }
 
         void Redraw()
