@@ -96,8 +96,21 @@ namespace XingyaoPerf
     // Settings window for the five custom scenes, one tab each.
     internal sealed class CustomForm : Form
     {
-        static readonly string[] ModeNames = { "办公模式", "平衡模式", "性能模式" };
-        static readonly string[] PowerNames = { "最佳能效", "平衡", "最佳性能" };
+        // Measured on AC with CPU and GPU fully loaded (docs/protocol.md, thermal-test.ps1 -Load both): the sustained
+        // package power (like PL1) and the peak with how long it lasted (like PL2). The real PL registers cannot be read here.
+        static readonly string[] ModeNames =
+        {
+            "低（办公）：持续 22 W，峰值 45 W 约 20 秒",
+            "中（平衡）：持续 34 W，峰值 46 W 约 40 秒",
+            "高（性能）：持续 40 W，峰值 46 W 约 60 秒",
+        };
+        // Measured with one thread fully loaded (docs/protocol.md); Best performance has not been measured yet.
+        static readonly string[] PowerNames =
+        {
+            "最佳能效：单核 3.8 GHz / 8.7 W，多核功耗 -25%",
+            "平衡：单核 4.6 GHz / 11.8 W",
+            "最佳性能：未实测",
+        };
         static readonly int[] CpuValues = { 0, 99, 80, 70 };
         static readonly string[] CpuNames = { "不限制", "关闭睿频（约 1.8 GHz）", "约 1.5 GHz", "约 1.3 GHz" };
         static readonly int[] GpuValues = { 0, 2000, 1600, 1200, 900 };
@@ -154,7 +167,7 @@ namespace XingyaoPerf
 
         static ComboBox Combo(string[] items, int index)
         {
-            var c = new ComboBox { DropDownStyle = ComboBoxStyle.DropDownList, Width = 220 };
+            var c = new ComboBox { DropDownStyle = ComboBoxStyle.DropDownList, Width = 440 };
             c.Items.AddRange(items);
             c.SelectedIndex = Math.Max(0, Math.Min(items.Length - 1, index));
             return c;
@@ -177,14 +190,16 @@ namespace XingyaoPerf
                 t.Controls.Add(new Label { Text = label, AutoSize = true, Anchor = AnchorStyles.Left, Margin = new Padding(3, 7, 12, 3) });
                 t.Controls.Add(ctl);
             };
-            g.Name = new TextBox { Text = p.Name, Width = 220, MaxLength = 20 };
+            g.Name = new TextBox { Text = p.Name, Width = 440, MaxLength = 20 };
             g.Mode = Combo(ModeNames, p.Mode - 1);
             g.Power = Combo(PowerNames, p.Power);
             g.Cpu = Combo(CpuNames, Array.IndexOf(CpuValues, p.Cpu));
             g.Gpu = Combo(Array.ConvertAll(GpuValues, v => v == 0 ? "不限制" : (v / 1000.0).ToString("0.0") + " GHz"), Array.IndexOf(GpuValues, p.Gpu));
             row("名称", g.Name);
-            row("官方模式", g.Mode);
+            row("功耗上限", g.Mode);
             row("Windows 电源模式", g.Power);
+            t.Controls.Add(new Label());
+            t.Controls.Add(new Label { Text = "功耗是插电时 CPU 和核显同时满载的实测值；用电池时三档都约 21–23 W。", AutoSize = true, ForeColor = SystemColors.GrayText });
             row("CPU 最高频率", g.Cpu);
             row("GPU 最高频率", g.Gpu);
 
