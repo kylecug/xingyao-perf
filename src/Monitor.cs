@@ -27,7 +27,8 @@ namespace XingyaoPerf
         public bool Overlay = true;
         public bool AvoidWeather = true;
         public int Layout; // 0 auto, 1 full, 2 compact
-        public int Scene; // 1-3 official modes, Monitor.SceneQuiet, Monitor.SceneFull; 0 until known
+        public int Scene; // 1-3 official modes, 4-6 the custom scenes; 0 until known
+        public Profile[] Custom = { Profile.Default(1), Profile.Default(2), Profile.Default(3) };
         public int GpuMaxMhz; // GPU menu choice in MHz, 0 = auto (follows the scene); reapplied because the driver may reset it
         public int CpuMaxMhz; // old frequency cap; only read so it can be cleared once
         public int CpuState; // CPU menu choice: maximum processor state in percent, 0 = auto (no limit); reapplied in case the plan changes
@@ -48,6 +49,7 @@ namespace XingyaoPerf
                     else if (kv[0] == "overlay") s.Overlay = kv[1] != "0";
                     else if (kv[0] == "avoidweather") s.AvoidWeather = kv[1] != "0";
                     else if (kv[0] == "scene") int.TryParse(kv[1], out s.Scene);
+                    else if (kv[0].Length == 7 && kv[0].StartsWith("custom") && kv[0][6] >= '1' && kv[0][6] <= '3') s.Custom[kv[0][6] - '1'] = Profile.Parse(kv[1], kv[0][6] - '0');
                     else if (kv[0] == "fanquiet") fanQuiet = kv[1] == "1"; // before 0.9.16 the quiet mode was a fan setting
                     else if (kv[0] == "gameoverlay") { int.TryParse(kv[1], out s.GameOverlay); if (s.GameOverlay < 0 || s.GameOverlay > 2) s.GameOverlay = 1; }
                     else if (kv[0] == "games") s.Games = kv[1];
@@ -60,7 +62,7 @@ namespace XingyaoPerf
             catch (IOException) { }
             catch (UnauthorizedAccessException) { }
             if (s.Mode < 1 || s.Mode > 3) s.Mode = 0;
-            if (s.Scene < 1 || s.Scene > Monitor.SceneFull) s.Scene = fanQuiet ? Monitor.SceneQuiet : s.Mode;
+            if (s.Scene < 1 || s.Scene > Monitor.SceneLast) s.Scene = fanQuiet ? Monitor.SceneCustom : s.Mode;
             if (s.GpuMaxMhz < 0) s.GpuMaxMhz = 0;
             return s;
         }
@@ -70,7 +72,7 @@ namespace XingyaoPerf
             try
             {
                 Directory.CreateDirectory(Log.Dir);
-                File.WriteAllText(FilePath, "mode=" + Mode + "\noverlay=" + (Overlay ? "1" : "0") + "\navoidweather=" + (AvoidWeather ? "1" : "0") + "\nlayout=" + Layout + "\ngameoverlay=" + GameOverlay + "\ngames=" + Games + "\ngpumax=" + GpuMaxMhz + "\ncpumax=" + CpuMaxMhz + "\ncpustate=" + CpuState + "\nscene=" + Scene + "\n");
+                File.WriteAllText(FilePath, "mode=" + Mode + "\noverlay=" + (Overlay ? "1" : "0") + "\navoidweather=" + (AvoidWeather ? "1" : "0") + "\nlayout=" + Layout + "\ngameoverlay=" + GameOverlay + "\ngames=" + Games + "\ngpumax=" + GpuMaxMhz + "\ncpumax=" + CpuMaxMhz + "\ncpustate=" + CpuState + "\nscene=" + Scene + "\ncustom1=" + Custom[0].Serialize() + "\ncustom2=" + Custom[1].Serialize() + "\ncustom3=" + Custom[2].Serialize() + "\n");
             }
             catch (Exception e) { Log.Write("save settings: " + e.Message); }
         }
@@ -98,12 +100,13 @@ namespace XingyaoPerf
         public event Action<int> ModeChanged;
         public event Action<string> FanReleased; // manual fan speed was handed back to the EC, with the reason
 
-        // Scenes, the first group of the menu: the three official modes as they are, the everyday quiet mode
-        // (office mode, Best power efficiency, quiet fans, GPU at 1.2 GHz) and full power (performance mode,
-        // Best performance). Picking a scene puts the fan, CPU and GPU menus back on "auto", which follows it.
-        public const int SceneQuiet = 4, SceneFull = 5;
-        const int QuietGpuMhz = 1200;
+        // Scenes, the first group of the menu: the three official modes as they are (Windows on Balanced, no limits,
+        // EC fans), and three custom scenes (scene 4-6), which set the official mode, Windows power mode, CPU and GPU
+        // limits and fan behaviour. They start as everyday quiet, full power and a plain example (see Profile).
+        // Picking a scene puts the fan, CPU and GPU menus back on "auto", which follows it.
+        public const int SceneCustom = 4, SceneLast = 6;
         public event Action SceneChanged;
+        Profile CustomProfile { get { int s = settings.Scene; return s >= SceneCustom && s <= SceneLast ? settings.Custom[s - SceneCustom] : null; } }
 
         // Fan menu choice: FanAuto follows the scene, 0 is the EC curve, otherwise a manual percent.
         // Not saved: every start begins on auto. Manual percent is handed back (to auto) when hot.
@@ -128,7 +131,15 @@ namespace XingyaoPerf
         const int QuietMinOn = 45, QuietMinLow = 30, StallSeconds = 5;
         volatile bool fanQuiet;
         volatile int quietState; // QuietEc, QuietLow or QuietOff
-        bool FanHeld { get { return quietState != QuietEc; } }
+        bool FanHeld { get { return quietState != QuietEc || curveHeld; } }
+
+        // Custom fan curve (see Profile): level i runs Pcts[i]; level 4 is the EC. Up as soon as the 5-sample average
+        // reaches a point, down once it has been CurveDownC below the point for CurveDownSamples samples.
+        const int CurveEcLevel = 4, CurveDownSamples = 20;
+        const double CurveDownC = 3, CurveSpikeC = 5; // a single reading this far above the last point goes to the EC at once
+        volatile Profile fanCurve; // set while the curve is running
+        volatile bool curveHeld;   // the curve holds the fans (stopped or a manual speed)
+        int curveLevel = CurveEcLevel, curveCool;
         int quietCool; // samples since the quiet logic last changed state
         int quietHold = QuietWindow; // samples needed on the EC before the next step: a window at start, QuietMinOn after a hand-back
         readonly double[] quietTemps = new double[QuietWindow], quietPowers = new double[QuietWindow];
@@ -200,8 +211,8 @@ namespace XingyaoPerf
             InitSensors();
             // A crash or power loss may have left a manual speed in the EC, so always start on the EC curve.
             // This is here, not in InitSensors, because --selftest must not write anything.
-            if (fans != null) try { fans.SetFanAuto(); } catch (Exception e) { Log.Write("fan auto at start: " + e.Message); }
-            fanQuiet = fans != null && settings.Scene == SceneQuiet; // the scene is kept across restarts; the quiet fans start on the EC curve
+            // SetFan(FanAuto) sends D5 10 first, then follows the saved scene (quiet fans or a custom curve start from the EC curve).
+            if (fans != null) try { SetFan(FanAuto); } catch (Exception e) { Log.Write("fan auto at start: " + e.Message); }
             ApplyScenePowerMode();
             int tick = 0;
             var last = DateTime.UtcNow;
@@ -219,6 +230,7 @@ namespace XingyaoPerf
                 lastSampleAt = DateTime.UtcNow;
                 if (fanPercent > 0) KeepFan(latest);
                 else if (fanQuiet) QuietFan(latest);
+                else if (fanCurve != null) CurveFan(latest);
                 Thread.Sleep(IntervalMs);
             }
         }
@@ -265,12 +277,12 @@ namespace XingyaoPerf
             if (h != null) h(mode);
         }
 
-        static int FirmwareModeFor(int scene) { return scene == SceneQuiet ? 1 : scene == SceneFull ? 3 : scene; }
+        int FirmwareModeFor(int scene) { return scene >= SceneCustom ? settings.Custom[scene - SceneCustom].Mode : scene; }
 
         // Called from a worker thread when the user picks a scene. Throws if the mode write is not confirmed.
         public void SetScene(int scene)
         {
-            if (scene < 1 || scene > SceneFull) throw new ArgumentOutOfRangeException("scene");
+            if (scene < 1 || scene > SceneLast) throw new ArgumentOutOfRangeException("scene");
             int mode = FirmwareModeFor(scene);
             lock (modeGate)
             {
@@ -300,25 +312,48 @@ namespace XingyaoPerf
         }
 
         public int Scene { get { return settings.Scene; } }
-        int CpuPercent { get { return settings.CpuState == 0 ? 100 : settings.CpuState; } }
-        int GpuMhz { get { return settings.GpuMaxMhz != 0 ? settings.GpuMaxMhz : settings.Scene == SceneQuiet ? QuietGpuMhz : 0; } }
+        int CpuPercent
+        {
+            get
+            {
+                if (settings.CpuState != 0) return settings.CpuState;
+                var p = CustomProfile;
+                return p == null || p.Cpu == 0 ? 100 : p.Cpu;
+            }
+        }
+        int GpuMhz { get { var p = CustomProfile; return settings.GpuMaxMhz != 0 ? settings.GpuMaxMhz : p != null ? p.Gpu : 0; } }
 
-        // FanAuto follows the scene (quiet fans in the quiet scene, otherwise the EC curve), 0 is the EC curve,
+        // Replaces the custom scenes from the settings window. If one of them is active it is applied again.
+        public void SetCustom(Profile[] profiles)
+        {
+            lock (modeGate)
+            {
+                settings.Custom = profiles;
+                settings.Save();
+            }
+            Log.Write("custom scenes saved");
+        }
+
+        // FanAuto follows the scene (a custom scene's fan setting, otherwise the EC curve), 0 is the EC curve,
         // otherwise a manual percent. Called from a worker thread.
         public void SetFan(int percent)
         {
             var f = fans;
             if (f == null) throw new InvalidOperationException("EC 端口不可用");
-            bool quiet = percent == FanAuto && settings.Scene == SceneQuiet;
+            var p = percent == FanAuto ? CustomProfile : null;
+            bool quiet = p != null && p.Fan == Profile.FanQuiet;
+            var curve = p != null && p.Fan == Profile.FanCurve ? p.Clone() : null;
             fanChoice = percent;
             quietHold = QuietWindow;
             fanQuiet = false;
+            fanCurve = null; curveHeld = false; curveLevel = CurveEcLevel; curveCool = 0;
             quietCool = 0;
             if (percent <= 0)
             {
                 f.SetFanAuto(); fanPercent = 0; quietState = QuietEc;
                 fanQuiet = quiet;
-                Log.Write(quiet ? "fan quiet mode" : percent == FanAuto ? "fan auto (EC)" : "fan EC curve");
+                fanCurve = curve;
+                Log.Write(quiet ? "fan quiet mode" : curve != null ? "fan custom curve" : percent == FanAuto ? "fan auto (EC)" : "fan EC curve");
                 return;
             }
             f.SetFanPercent(percent);
@@ -363,8 +398,7 @@ namespace XingyaoPerf
             var f = fans;
             if (f == null) return;
             double t = s.TempC, w = s.PkgW;
-            quietTemps[quietNext] = t; quietPowers[quietNext] = w;
-            quietNext = (quietNext + 1) % QuietWindow;
+            Record(s);
             quietCool++;
             double t5 = Recent(quietTemps, QuietBackWindow), w10 = Recent(quietPowers, QuietBackPowerWindow);
 
@@ -419,6 +453,55 @@ namespace XingyaoPerf
             Log.Write("quiet: fans low " + QuietLowPercent + "% (" + why + ")");
         }
 
+        void Record(Snapshot s)
+        {
+            quietTemps[quietNext] = s.TempC; quietPowers[quietNext] = s.PkgW;
+            quietNext = (quietNext + 1) % QuietWindow;
+        }
+
+        void CurveFan(Snapshot s)
+        {
+            var p = fanCurve;
+            if (p == null || fans == null) return;
+            Record(s);
+            double t = s.TempC, t5 = Recent(quietTemps, QuietBackWindow);
+            if (double.IsNaN(t))
+            {
+                if (++fanUnknownTemp >= 6 && curveLevel != CurveEcLevel) CurveTo(CurveEcLevel, "读不到温度");
+                return;
+            }
+            fanUnknownTemp = 0;
+            if (t >= p.Temps[3] + CurveSpikeC) { if (curveLevel != CurveEcLevel) CurveTo(CurveEcLevel, "温度 " + t.ToString("0") + " °C"); curveCool = 0; return; }
+            if (double.IsNaN(t5)) return; // the first few samples after a change
+            int up = 0, down = 0;
+            for (int i = 0; i < 4; i++)
+            {
+                if (t5 >= p.Temps[i]) up = i + 1;
+                if (t5 >= p.Temps[i] - CurveDownC) down = i + 1;
+            }
+            if (up > curveLevel) { curveCool = 0; CurveTo(up, "5 秒平均温度 " + t5.ToString("0") + " °C"); }
+            else if (down < curveLevel)
+            {
+                if (++curveCool >= CurveDownSamples) { curveCool = 0; CurveTo(down, "5 秒平均温度 " + t5.ToString("0") + " °C"); }
+            }
+            else curveCool = 0;
+        }
+
+        void CurveTo(int level, string why)
+        {
+            var p = fanCurve;
+            if (p == null) return;
+            try
+            {
+                if (level >= CurveEcLevel) { fans.SetFanAuto(); curveHeld = false; }
+                else if (p.Pcts[level] == 0) { fans.SetFanOff(); curveHeld = true; }
+                else { fans.SetFanPercent(p.Pcts[level]); curveHeld = true; }
+                curveLevel = level;
+                Log.Write("curve: " + (level >= CurveEcLevel ? "EC" : p.Pcts[level] == 0 ? "fans stopped" : p.Pcts[level] + "%") + " (" + why + ")");
+            }
+            catch (Exception e) { Log.Write("curve: write failed: " + e.Message); }
+        }
+
         // Back to the EC curve while staying in quiet mode.
         void QuietBack(string why)
         {
@@ -426,6 +509,7 @@ namespace XingyaoPerf
             try { if (f != null) f.SetFanAuto(); } catch (Exception e) { Log.Write("quiet: back to EC failed: " + e.Message); return; }
             Log.Write("quiet: fans back to EC (" + why + ")");
             quietState = QuietEc; quietCool = 0; quietHold = QuietMinOn;
+            curveHeld = false; curveLevel = CurveEcLevel; curveCool = 0;
         }
 
         // Windows keeps the power mode per power source, so it is applied again at start and when AC changes.
@@ -433,7 +517,9 @@ namespace XingyaoPerf
         {
             int scene = settings.Scene;
             if (scene == 0) return;
-            Guid want = scene == SceneQuiet ? PowerMode.BestEfficiency : scene == SceneFull ? PowerMode.BestPerformance : PowerMode.Balanced;
+            var p = CustomProfile;
+            int power = p == null ? Profile.PowerBalanced : p.Power;
+            Guid want = power == Profile.PowerEfficiency ? PowerMode.BestEfficiency : power == Profile.PowerPerformance ? PowerMode.BestPerformance : PowerMode.Balanced;
             try
             {
                 Guid now = PowerMode.Get();
@@ -538,7 +624,7 @@ namespace XingyaoPerf
         public void Dispose()
         {
             running = false;
-            if (fanPercent > 0 || FanHeld) try { fans.SetFanAuto(); fanPercent = 0; quietState = QuietEc; Log.Write("fan auto at exit"); } catch (Exception e) { Log.Write("fan auto at exit: " + e.Message); }
+            if (fanPercent > 0 || FanHeld) try { fanCurve = null; fans.SetFanAuto(); fanPercent = 0; quietState = QuietEc; curveHeld = false; Log.Write("fan auto at exit"); } catch (Exception e) { Log.Write("fan auto at exit: " + e.Message); }
             if (thread.IsAlive) thread.Join(5000);
             if (counters != null) counters.Dispose();
             if (fans != null) fans.Dispose();
