@@ -87,9 +87,13 @@ function Read-Temp {
     if ($v.Count) { return ($v | Measure-Object -Maximum).Maximum }
     return -1
 }
+# Readings are also appended to %LOCALAPPDATA%\xingyao-perf\fan-test.log, so they can be read after the window closes.
+$logFile = Join-Path $env:LOCALAPPDATA 'xingyao-perf\fan-test.log'
 function Show($ec, $label) {
     $r = $ec.Read()
-    '{0:HH:mm:ss} {1,-8} fan0={2,5} fan1={3,5} rpm  ecMode={4}  {5} C' -f (Get-Date), $label, $r[1], $r[2], $r[0], (Read-Temp)
+    $line = '{0:yyyy-MM-dd HH:mm:ss} {1,-8} fan0={2,5} fan1={3,5} rpm  ecMode={4}  {5} C' -f (Get-Date), $label, $r[1], $r[2], $r[0], (Read-Temp)
+    try { Add-Content -Path $logFile -Value $line } catch { }
+    $line
 }
 
 $ec = New-Object FanTestEc

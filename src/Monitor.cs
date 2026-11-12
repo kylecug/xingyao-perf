@@ -491,6 +491,8 @@ namespace XingyaoPerf
         {
             var p = fanCurve;
             if (p == null) return;
+            // Neighbouring levels may share a speed; then only the level changes and nothing is sent.
+            if (level < CurveEcLevel && curveLevel < CurveEcLevel && p.Pcts[level] == p.Pcts[curveLevel]) { curveLevel = level; return; }
             try
             {
                 if (level >= CurveEcLevel) { fans.SetFanAuto(); curveHeld = false; }

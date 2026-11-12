@@ -190,9 +190,10 @@ namespace XingyaoPerf
 
         // Fan writes, verified on this machine: D6 <pwm> holds both fans at one PWM, D5 10 returns them to the EC curve.
         // Neither replies. Manual PWM bypasses the EC curve, so the caller must restore auto (see Monitor).
+        // 10% gives about 1175 rpm, 20% about 2520, 30% about 3530 (fan-test.ps1, 2026-11-12).
         public void SetFanPercent(int percent)
         {
-            if (percent < 30 || percent > 100) throw new ArgumentOutOfRangeException("percent");
+            if (percent < 10 || percent > 100) throw new ArgumentOutOfRangeException("percent");
             Locked(() => Send(0xd6, (byte)Math.Round(percent * 255.0 / 100), false));
         }
 

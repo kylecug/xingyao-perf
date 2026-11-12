@@ -62,7 +62,7 @@ namespace XingyaoPerf
         static readonly int[] CpuStates = { 0, 99, 80, 70 };
         static readonly string[] CpuStateNames = { "自动（跟随模式）", "关闭睿频（约 1.8 GHz）", "约 1.5 GHz", "约 1.3 GHz" };
         static readonly int[] GpuCaps = { 0, 2000, 1600, 1200, 900 };
-        static readonly int[] FanLevels = { Monitor.FanAuto, 0, 100, 70, 50, 30 };
+        static readonly int[] FanLevels = { Monitor.FanAuto, 0, 100, 70, 50, 30, 20, 10 };
         readonly ToolStripMenuItem officialMenu = new ToolStripMenuItem("官方模式");
         readonly ToolStripMenuItem[] sceneItems = new ToolStripMenuItem[7];
         CustomForm customForm;

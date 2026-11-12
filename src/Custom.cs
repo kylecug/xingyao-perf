@@ -18,7 +18,7 @@ namespace XingyaoPerf
         public int Gpu;                       // GPU cap in MHz, 0 = no limit
         public int Fan = FanCurve;
         // Fan curve: below Temps[0] the fans run at Pcts[0], from Temps[i] at Pcts[i + 1], and from Temps[3] the EC takes over.
-        // Percent 0 stops the fans; otherwise 30-100, the range verified for D6.
+        // Percent 0 stops the fans; otherwise 10-100 (10, 20 and 30 and up verified for D6, see docs/protocol.md).
         public int[] Temps = { 58, 68, 78, 85 };
         public int[] Pcts = { 0, 30, 45, 65 };
 
@@ -70,7 +70,7 @@ namespace XingyaoPerf
             {
                 if (Temps[i] < 30 || Temps[i] > 90) return "温度要在 30 到 90 °C 之间";
                 if (i > 0 && Temps[i] <= Temps[i - 1]) return "温度要从左到右递增";
-                if (Pcts[i] != 0 && (Pcts[i] < 30 || Pcts[i] > 100)) return "风扇只能停转或 30% 到 100%";
+                if (Pcts[i] != 0 && (Pcts[i] < 10 || Pcts[i] > 100)) return "风扇只能停转或 10% 到 100%";
             }
             return null;
         }
@@ -93,7 +93,7 @@ namespace XingyaoPerf
         static readonly string[] CpuNames = { "不限制", "关闭睿频（约 1.8 GHz）", "约 1.5 GHz", "约 1.3 GHz" };
         static readonly int[] GpuValues = { 0, 2000, 1600, 1200, 900 };
         static readonly string[] FanNames = { "EC 曲线", "静音（低温停转，30%，再交还 EC）", "自定义曲线" };
-        static readonly int[] PctValues = { 0, 30, 35, 40, 45, 50, 55, 60, 65, 70, 75, 80, 85, 90, 95, 100 };
+        static readonly int[] PctValues = { 0, 10, 20, 30, 35, 40, 45, 50, 55, 60, 65, 70, 75, 80, 85, 90, 95, 100 };
 
         sealed class Page
         {
