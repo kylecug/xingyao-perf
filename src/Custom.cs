@@ -5,10 +5,11 @@ using System.Windows.Forms;
 
 namespace XingyaoPerf
 {
-    // One of the three custom scenes. Saved in settings.ini as custom1..custom3.
+    // One of the five custom scenes. Saved in settings.ini as custom1..custom5.
     internal sealed class Profile
     {
-        public const int FanEc = 0, FanQuiet = 1, FanCurve = 2;
+        public const int Ec = -1; // a curve speed that hands the fans to the EC
+        const int OldFanEc = 0, OldFanQuiet = 1; // fan settings before 0.9.20, turned into curves when read
         public const int PowerEfficiency = 0, PowerBalanced = 1, PowerPerformance = 2;
 
         public string Name;
@@ -16,23 +17,28 @@ namespace XingyaoPerf
         public int Power = PowerBalanced;     // Windows power mode
         public int Cpu;                       // maximum processor state in percent, 0 = no limit
         public int Gpu;                       // GPU cap in MHz, 0 = no limit
-        public int Fan = FanCurve;
         // Fan curve: below Temps[0] the fans run at Pcts[0], from Temps[i] at Pcts[i + 1], and from Temps[3] the EC takes over.
-        // Percent 0 stops the fans; otherwise 10-100 (10, 20 and 30 and up verified for D6, see docs/protocol.md).
+        // A speed is Ec, 0 (fans stopped) or 10-100 (10, 20 and 30 and up verified for D6, see docs/protocol.md).
         public int[] Temps = { 58, 68, 78, 85 };
         public int[] Pcts = { 0, 30, 45, 65 };
 
-        // The first two start as the everyday quiet and full power modes; the third is a plain example.
+        // The first two start as the everyday quiet and full power modes; the others are plain examples.
         public static Profile Default(int i)
         {
-            if (i == 1) return new Profile { Name = "日常静音模式", Mode = 1, Power = PowerEfficiency, Gpu = 1200, Fan = FanQuiet };
-            if (i == 2) return new Profile { Name = "火力全开模式", Mode = 3, Power = PowerPerformance, Fan = FanEc };
-            return new Profile { Name = "自定义 " + i };
+            if (i == 1) return new Profile { Name = "日常静音模式", Mode = 1, Power = PowerEfficiency, Gpu = 1200, Temps = QuietTemps(), Pcts = QuietPcts() };
+            if (i == 2) return new Profile { Name = "火力全开模式", Mode = 3, Power = PowerPerformance, Pcts = AllEc() };
+            return new Profile { Name = "模式 " + i };
         }
+
+        // Everyday quiet: stopped while cool, then 10% (about 1175 rpm), 20% (about 2520 rpm), then the EC.
+        static int[] QuietTemps() { return new[] { 62, 68, 74, 85 }; }
+        static int[] QuietPcts() { return new[] { 0, 10, 20, Ec }; }
+        static int[] AllEc() { return new[] { Ec, Ec, Ec, Ec }; }
 
         public string Serialize()
         {
-            return Name.Replace("|", "/").Replace("=", "-") + "|" + Mode + "|" + Power + "|" + Cpu + "|" + Gpu + "|" + Fan + "|" + Join(Temps) + "|" + Join(Pcts);
+            // The 2 is the old fan setting field ("curve"), kept so the format stays the same.
+            return Name.Replace("|", "/").Replace("=", "-") + "|" + Mode + "|" + Power + "|" + Cpu + "|" + Gpu + "|2|" + Join(Temps) + "|" + Join(Pcts);
         }
 
         static string Join(int[] a) { return string.Join(",", Array.ConvertAll(a, x => x.ToString(CultureInfo.InvariantCulture))); }
@@ -50,7 +56,10 @@ namespace XingyaoPerf
             try
             {
                 var f = v.Split('|');
-                var p = new Profile { Name = f[0], Mode = int.Parse(f[1]), Power = int.Parse(f[2]), Cpu = int.Parse(f[3]), Gpu = int.Parse(f[4]), Fan = int.Parse(f[5]), Temps = Split(f[6]), Pcts = Split(f[7]) };
+                var p = new Profile { Name = f[0], Mode = int.Parse(f[1]), Power = int.Parse(f[2]), Cpu = int.Parse(f[3]), Gpu = int.Parse(f[4]), Temps = Split(f[6]), Pcts = Split(f[7]) };
+                int fan = int.Parse(f[5]);
+                if (fan == OldFanEc) p.Pcts = AllEc();
+                else if (fan == OldFanQuiet) { p.Temps = QuietTemps(); p.Pcts = QuietPcts(); }
                 if (p.Check() == null) return p;
             }
             catch (Exception) { }
@@ -62,7 +71,7 @@ namespace XingyaoPerf
         public string Check()
         {
             if (string.IsNullOrEmpty(Name) || Name.Trim().Length == 0) return "名称不能为空";
-            if (Mode < 1 || Mode > 3 || Power < 0 || Power > 2 || Fan < 0 || Fan > 2) return "选项无效";
+            if (Mode < 1 || Mode > 3 || Power < 0 || Power > 2) return "选项无效";
             if (Cpu != 0 && (Cpu < 50 || Cpu > 99)) return "CPU 选项无效";
             if (Gpu < 0) return "GPU 选项无效";
             if (Temps == null || Temps.Length != 4 || Pcts == null || Pcts.Length != 4) return "风扇曲线无效";
@@ -70,7 +79,7 @@ namespace XingyaoPerf
             {
                 if (Temps[i] < 30 || Temps[i] > 90) return "温度要在 30 到 90 °C 之间";
                 if (i > 0 && Temps[i] <= Temps[i - 1]) return "温度要从左到右递增";
-                if (Pcts[i] != 0 && (Pcts[i] < 10 || Pcts[i] > 100)) return "风扇只能停转或 10% 到 100%";
+                if (Pcts[i] != Ec && Pcts[i] != 0 && (Pcts[i] < 10 || Pcts[i] > 100)) return "风扇只能是停转、10% 到 100% 或 EC";
             }
             return null;
         }
@@ -84,7 +93,7 @@ namespace XingyaoPerf
         }
     }
 
-    // Settings window for the three custom scenes, one tab each.
+    // Settings window for the five custom scenes, one tab each.
     internal sealed class CustomForm : Form
     {
         static readonly string[] ModeNames = { "办公模式", "平衡模式", "性能模式" };
@@ -92,19 +101,18 @@ namespace XingyaoPerf
         static readonly int[] CpuValues = { 0, 99, 80, 70 };
         static readonly string[] CpuNames = { "不限制", "关闭睿频（约 1.8 GHz）", "约 1.5 GHz", "约 1.3 GHz" };
         static readonly int[] GpuValues = { 0, 2000, 1600, 1200, 900 };
-        static readonly string[] FanNames = { "EC 曲线", "静音（低温停转，30%，再交还 EC）", "自定义曲线" };
-        static readonly int[] PctValues = { 0, 10, 20, 30, 35, 40, 45, 50, 55, 60, 65, 70, 75, 80, 85, 90, 95, 100 };
+        static readonly int[] PctValues = { Profile.Ec, 0, 10, 20, 30, 35, 40, 45, 50, 55, 60, 65, 70, 75, 80, 85, 90, 95, 100 };
 
         sealed class Page
         {
             public TextBox Name;
-            public ComboBox Mode, Power, Cpu, Gpu, Fan;
+            public ComboBox Mode, Power, Cpu, Gpu;
             public NumericUpDown[] Temps = new NumericUpDown[4];
             public ComboBox[] Pcts = new ComboBox[4];
             public Control Curve;
         }
 
-        readonly Page[] pages = new Page[3];
+        readonly Page[] pages = new Page[Monitor.CustomCount];
         readonly TabControl tabs = new TabControl { Dock = DockStyle.Fill };
 
         // Called with the edited profiles and the index of the tab to switch to, or -1 to only save.
@@ -122,8 +130,8 @@ namespace XingyaoPerf
             AutoSize = true;
             AutoSizeMode = AutoSizeMode.GrowAndShrink;
 
-            for (int i = 0; i < 3; i++) tabs.TabPages.Add(BuildPage(i, profiles[i]));
-            tabs.SelectedIndex = Math.Max(0, Math.Min(2, selected));
+            for (int i = 0; i < pages.Length; i++) tabs.TabPages.Add(BuildPage(i, profiles[i]));
+            tabs.SelectedIndex = Math.Max(0, Math.Min(pages.Length - 1, selected));
             tabs.Size = tabs.TabPages[0].Controls[0].PreferredSize + new Size(24, 40);
 
             var apply = new Button { Text = "应用并切换到此模式", AutoSize = true };
@@ -174,13 +182,11 @@ namespace XingyaoPerf
             g.Power = Combo(PowerNames, p.Power);
             g.Cpu = Combo(CpuNames, Array.IndexOf(CpuValues, p.Cpu));
             g.Gpu = Combo(Array.ConvertAll(GpuValues, v => v == 0 ? "不限制" : (v / 1000.0).ToString("0.0") + " GHz"), Array.IndexOf(GpuValues, p.Gpu));
-            g.Fan = Combo(FanNames, p.Fan);
             row("名称", g.Name);
             row("官方模式", g.Mode);
             row("Windows 电源模式", g.Power);
             row("CPU 最高频率", g.Cpu);
             row("GPU 最高频率", g.Gpu);
-            row("风扇", g.Fan);
 
             // Curve: four temperatures and four speeds; the last column hands the fans to the EC.
             var c = new TableLayoutPanel { AutoSize = true, ColumnCount = 6, Margin = new Padding(0, 6, 0, 0) };
@@ -194,7 +200,7 @@ namespace XingyaoPerf
             c.Controls.Add(new Label { Text = "风扇", AutoSize = true, Anchor = AnchorStyles.Left });
             for (int k = 0; k < 4; k++)
             {
-                g.Pcts[k] = Combo(Array.ConvertAll(PctValues, v => v == 0 ? "停转" : v + "%"), Array.IndexOf(PctValues, p.Pcts[k]));
+                g.Pcts[k] = Combo(Array.ConvertAll(PctValues, v => v == Profile.Ec ? "EC" : v == 0 ? "停转" : v + "%"), Array.IndexOf(PctValues, p.Pcts[k]));
                 g.Pcts[k].Width = CellW;
                 c.Controls.Add(g.Pcts[k]);
             }
@@ -204,8 +210,6 @@ namespace XingyaoPerf
             t.Controls.Add(c);
             t.Controls.Add(new Label());
             t.Controls.Add(new Label { Text = "每格是从这个温度起的风扇转速。按 5 秒平均温度换档；\n降温要比该点低 3 °C 并保持 20 秒。读不到温度、睡眠或退出时交还 EC。", AutoSize = true, ForeColor = SystemColors.GrayText });
-            g.Fan.SelectedIndexChanged += (s, e) => c.Enabled = g.Fan.SelectedIndex == Profile.FanCurve;
-            c.Enabled = g.Fan.SelectedIndex == Profile.FanCurve;
             g.Name.TextChanged += (s, e) => tabs.TabPages[i].Text = g.Name.Text.Length == 0 ? "自定义 " + (i + 1) : g.Name.Text;
 
             var page = new TabPage(p.Name) { UseVisualStyleBackColor = true };
@@ -223,7 +227,6 @@ namespace XingyaoPerf
                 Power = g.Power.SelectedIndex,
                 Cpu = CpuValues[g.Cpu.SelectedIndex],
                 Gpu = GpuValues[g.Gpu.SelectedIndex],
-                Fan = g.Fan.SelectedIndex,
             };
             for (int k = 0; k < 4; k++) { p.Temps[k] = (int)g.Temps[k].Value; p.Pcts[k] = PctValues[g.Pcts[k].SelectedIndex]; }
             return p;
@@ -231,8 +234,8 @@ namespace XingyaoPerf
 
         void Finish(int switchTo)
         {
-            var result = new Profile[3];
-            for (int i = 0; i < 3; i++)
+            var result = new Profile[pages.Length];
+            for (int i = 0; i < pages.Length; i++)
             {
                 result[i] = Read(i);
                 string problem = result[i].Check();

@@ -64,7 +64,8 @@ namespace XingyaoPerf
         static readonly int[] GpuCaps = { 0, 2000, 1600, 1200, 900 };
         static readonly int[] FanLevels = { Monitor.FanAuto, 0, 100, 70, 50, 30, 20, 10 };
         readonly ToolStripMenuItem officialMenu = new ToolStripMenuItem("官方模式");
-        readonly ToolStripMenuItem[] sceneItems = new ToolStripMenuItem[7];
+        readonly ToolStripMenuItem[] sceneItems = new ToolStripMenuItem[Monitor.SceneLast + 1];
+        const string CustomPrefix = "自定义：";
         CustomForm customForm;
         readonly ToolStripMenuItem fanMenu = new ToolStripMenuItem("风扇");
         readonly ToolStripMenuItem cpuMenu = new ToolStripMenuItem("CPU 最高频率"), gpuMenu = new ToolStripMenuItem("GPU 最高频率");
@@ -95,7 +96,7 @@ namespace XingyaoPerf
             for (int m = Monitor.SceneCustom; m <= Monitor.SceneLast; m++)
             {
                 int scene = m;
-                var item = new ToolStripMenuItem(settings.Custom[m - Monitor.SceneCustom].Name) { Enabled = Platform.ModeWriteAllowed };
+                var item = new ToolStripMenuItem(CustomPrefix + settings.Custom[m - Monitor.SceneCustom].Name) { Enabled = Platform.ModeWriteAllowed };
                 item.Click += (s, e) => { menu.Close(); Pick(scene); };
                 item.DropDownItems.Add(new ToolStripMenuItem("设置…", null, (s, e) => OpenCustom(scene - Monitor.SceneCustom)));
                 sceneItems[m] = item;
@@ -234,13 +235,13 @@ namespace XingyaoPerf
         void OpenCustom(int index)
         {
             if (customForm != null && !customForm.IsDisposed) { customForm.Activate(); return; }
-            var copies = new Profile[3];
-            for (int i = 0; i < 3; i++) copies[i] = settings.Custom[i].Clone();
+            var copies = new Profile[Monitor.CustomCount];
+            for (int i = 0; i < copies.Length; i++) copies[i] = settings.Custom[i].Clone();
             customForm = new CustomForm(copies, index);
             customForm.Saved += (profiles, switchTo) =>
             {
                 monitor.SetCustom(profiles);
-                for (int i = 0; i < 3; i++) sceneItems[Monitor.SceneCustom + i].Text = profiles[i].Name;
+                for (int i = 0; i < profiles.Length; i++) sceneItems[Monitor.SceneCustom + i].Text = CustomPrefix + profiles[i].Name;
                 int active = monitor.Scene;
                 // Apply the new settings: the chosen tab, or the active custom scene if it was edited.
                 if (switchTo >= 0) Pick(Monitor.SceneCustom + switchTo);
@@ -263,7 +264,7 @@ namespace XingyaoPerf
                 if (iconHandle != IntPtr.Zero) Native.DestroyIcon(iconHandle);
                 iconHandle = h;
             }
-            string name = scene >= Monitor.SceneCustom && scene <= Monitor.SceneLast ? settings.Custom[scene - Monitor.SceneCustom].Name : Names[scene >= 1 && scene <= 3 ? scene : mode];
+            string name = scene >= Monitor.SceneCustom && scene <= Monitor.SceneLast ? CustomPrefix + settings.Custom[scene - Monitor.SceneCustom].Name : Names[scene >= 1 && scene <= 3 ? scene : mode];
             tray.Text = "xingyao-perf: " + name;
         }
 
@@ -528,7 +529,7 @@ namespace XingyaoPerf
                 {
                     SavePreview(path + ".png", last, false);
                     SavePreview(path + ".compact.png", last, true);
-                    using (var form = new CustomForm(new[] { Profile.Default(1), Profile.Default(2), Profile.Default(3) }, 2))
+                    using (var form = new CustomForm(new[] { Profile.Default(1), Profile.Default(2), Profile.Default(3), Profile.Default(4), Profile.Default(5) }, 0))
                     {
                         // Shown off screen for a moment, because a hidden form does not paint its controls.
                         form.StartPosition = FormStartPosition.Manual;
