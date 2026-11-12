@@ -7,7 +7,7 @@
 # Manual PWM bypasses the EC temperature curve, so the script restores auto when it ends, on Ctrl+C,
 # and early if the temperature reaches -MaxTempC. It re-sends the PWM every 5 seconds while holding,
 # unless -NoResend, which sends it once to see whether the EC keeps a manual speed on its own.
-param([ValidateSet('status', 'set', 'auto')][string]$Action = 'status', [ValidateRange(30, 100)][int]$Percent = 100,
+param([ValidateSet('status', 'set', 'auto')][string]$Action = 'status', [ValidateRange(0, 100)][int]$Percent = 100,
       [ValidateRange(5, 600)][int]$Seconds = 60, [int]$MaxTempC = 90, [switch]$NoResend)
 $ErrorActionPreference = 'Stop'
 
