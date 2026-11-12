@@ -104,12 +104,12 @@ namespace XingyaoPerf
             "中（平衡）：持续 34 W，峰值 46 W 约 40 秒",
             "高（性能）：持续 40 W，峰值 46 W 约 60 秒",
         };
-        // Measured with one thread fully loaded (docs/protocol.md); Best performance has not been measured yet.
+        // Fastest core and package power with one thread fully loaded, all three in one run (power-mode-test.ps1, docs/protocol.md).
         static readonly string[] PowerNames =
         {
-            "最佳能效：单核 3.8 GHz / 8.7 W，多核功耗 -25%",
-            "平衡：单核 4.6 GHz / 11.8 W",
-            "最佳性能：未实测",
+            "最佳能效：单核 3.65 GHz / 7.2 W",
+            "平衡：单核 4.68 GHz / 8.7 W",
+            "最佳性能：单核 4.77 GHz / 9.0 W",
         };
         static readonly int[] CpuValues = { 0, 99, 80, 70 };
         static readonly string[] CpuNames = { "不限制", "关闭睿频（约 1.8 GHz）", "约 1.5 GHz", "约 1.3 GHz" };

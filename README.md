@@ -2,7 +2,7 @@
 
 机械革命星耀14（`XINGYAO Series-P916F-PTL`，Core Ultra X7 358H）的极简性能工具：托盘切换性能模式，并在任务栏上直接显示监控数值。
 
-当前版本 0.9.21。单个 exe，约 100 KB，依赖系统自带的 .NET Framework。
+当前版本 0.9.22。单个 exe，约 100 KB，依赖系统自带的 .NET Framework。
 
 ## 功能
 

@@ -142,7 +142,9 @@ namespace XingyaoPerf
         public Monitor(Settings settings)
         {
             this.settings = settings;
-            thread = new Thread(Run) { IsBackground = true, Name = "sensors", Priority = ThreadPriority.BelowNormal };
+            // Above normal: a sample takes a few ms a second, and the fan curve must keep running when every core is busy
+            // (at below normal, a 16-thread load stalled sampling and the watchdog handed the fans to the EC).
+            thread = new Thread(Run) { IsBackground = true, Name = "sensors", Priority = ThreadPriority.AboveNormal };
         }
 
         public void Start() { restoreUntil = DateTime.UtcNow.AddSeconds(RestoreWindowSeconds); thread.Start(); }
