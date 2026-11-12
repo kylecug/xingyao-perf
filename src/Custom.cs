@@ -199,7 +199,7 @@ namespace XingyaoPerf
             row("功耗上限", g.Mode);
             row("Windows 电源模式", g.Power);
             t.Controls.Add(new Label());
-            t.Controls.Add(new Label { Text = "功耗是插电时 CPU 和核显同时满载的实测值；用电池时三档都约 21–23 W。", AutoSize = true, ForeColor = SystemColors.GrayText });
+            t.Controls.Add(new Label { Text = "功耗是插电时 CPU 和核显同时满载的实测值；用电池时三档都约 21–23 W。\nHWMonitor 显示的 PL1 40 W / PL2 65 W 是三档共用的上限，各档另有更低的限制。", AutoSize = true, ForeColor = SystemColors.GrayText });
             row("CPU 最高频率", g.Cpu);
             row("GPU 最高频率", g.Gpu);
 
