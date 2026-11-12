@@ -397,6 +397,8 @@ namespace XingyaoPerf
     internal static class PowerMode
     {
         public static readonly Guid BestEfficiency = new Guid("961cc777-2547-4f9d-8174-7d86181b8a7a");
+        public static readonly Guid Balanced = Guid.Empty; // the overlay reads as all zeros when on "Balanced"
+        public static readonly Guid BestPerformance = new Guid("ded574b5-45a0-4f42-8737-46345c09c238");
         [DllImport("powrprof.dll")] static extern uint PowerGetActualOverlayScheme(out Guid g);
         [DllImport("powrprof.dll")] static extern uint PowerSetActiveOverlayScheme(Guid g);
 

@@ -27,17 +27,17 @@ namespace XingyaoPerf
         public bool Overlay = true;
         public bool AvoidWeather = true;
         public int Layout; // 0 auto, 1 full, 2 compact
-        public int GpuMaxMhz; // 0 = no cap; reapplied because the driver may reset it
+        public int Scene; // 1-3 official modes, Monitor.SceneQuiet, Monitor.SceneFull; 0 until known
+        public int GpuMaxMhz; // GPU menu choice in MHz, 0 = auto (follows the scene); reapplied because the driver may reset it
         public int CpuMaxMhz; // old frequency cap; only read so it can be cleared once
-        public int CpuState = 100; // maximum processor state in percent; reapplied in case the plan changes
-        public bool FanQuiet; // quiet fan mode: fans stop while cool, the EC curve otherwise
-        public string QuietSavedPowerMode = ""; // Windows power mode before the quiet mode switched it
+        public int CpuState; // CPU menu choice: maximum processor state in percent, 0 = auto (no limit); reapplied in case the plan changes
         public int GameOverlay = 1; // 0 off, 1 listed games only, 2 any fullscreen app (and listed games)
         public string Games = ""; // extra game process names without .exe, separated by |, beyond the ones Windows recognises
 
         public static Settings Load()
         {
             var s = new Settings();
+            bool fanQuiet = false;
             try
             {
                 foreach (var line in File.ReadAllLines(FilePath))
@@ -47,19 +47,21 @@ namespace XingyaoPerf
                     if (kv[0] == "mode") int.TryParse(kv[1], out s.Mode);
                     else if (kv[0] == "overlay") s.Overlay = kv[1] != "0";
                     else if (kv[0] == "avoidweather") s.AvoidWeather = kv[1] != "0";
-                    else if (kv[0] == "fanquiet") s.FanQuiet = kv[1] == "1";
-                    else if (kv[0] == "quietpowermode") s.QuietSavedPowerMode = kv[1];
+                    else if (kv[0] == "scene") int.TryParse(kv[1], out s.Scene);
+                    else if (kv[0] == "fanquiet") fanQuiet = kv[1] == "1"; // before 0.9.16 the quiet mode was a fan setting
                     else if (kv[0] == "gameoverlay") { int.TryParse(kv[1], out s.GameOverlay); if (s.GameOverlay < 0 || s.GameOverlay > 2) s.GameOverlay = 1; }
                     else if (kv[0] == "games") s.Games = kv[1];
                     else if (kv[0] == "gpumax") int.TryParse(kv[1], out s.GpuMaxMhz);
                     else if (kv[0] == "cpumax") int.TryParse(kv[1], out s.CpuMaxMhz);
-                    else if (kv[0] == "cpustate") { int.TryParse(kv[1], out s.CpuState); if (s.CpuState < 50 || s.CpuState > 100) s.CpuState = 100; }
+                    else if (kv[0] == "cpustate") { int.TryParse(kv[1], out s.CpuState); if (s.CpuState < 50 || s.CpuState >= 100) s.CpuState = 0; }
                     else if (kv[0] == "layout") { int.TryParse(kv[1], out s.Layout); if (s.Layout < 0 || s.Layout > 2) s.Layout = 0; }
                 }
             }
             catch (IOException) { }
             catch (UnauthorizedAccessException) { }
             if (s.Mode < 1 || s.Mode > 3) s.Mode = 0;
+            if (s.Scene < 1 || s.Scene > Monitor.SceneFull) s.Scene = fanQuiet ? Monitor.SceneQuiet : s.Mode;
+            if (s.GpuMaxMhz < 0) s.GpuMaxMhz = 0;
             return s;
         }
 
@@ -68,7 +70,7 @@ namespace XingyaoPerf
             try
             {
                 Directory.CreateDirectory(Log.Dir);
-                File.WriteAllText(FilePath, "mode=" + Mode + "\noverlay=" + (Overlay ? "1" : "0") + "\navoidweather=" + (AvoidWeather ? "1" : "0") + "\nlayout=" + Layout + "\ngameoverlay=" + GameOverlay + "\ngames=" + Games + "\ngpumax=" + GpuMaxMhz + "\ncpumax=" + CpuMaxMhz + "\ncpustate=" + CpuState + "\nfanquiet=" + (FanQuiet ? "1" : "0") + "\nquietpowermode=" + QuietSavedPowerMode + "\n");
+                File.WriteAllText(FilePath, "mode=" + Mode + "\noverlay=" + (Overlay ? "1" : "0") + "\navoidweather=" + (AvoidWeather ? "1" : "0") + "\nlayout=" + Layout + "\ngameoverlay=" + GameOverlay + "\ngames=" + Games + "\ngpumax=" + GpuMaxMhz + "\ncpumax=" + CpuMaxMhz + "\ncpustate=" + CpuState + "\nscene=" + Scene + "\n");
             }
             catch (Exception e) { Log.Write("save settings: " + e.Message); }
         }
@@ -96,13 +98,20 @@ namespace XingyaoPerf
         public event Action<int> ModeChanged;
         public event Action<string> FanReleased; // manual fan speed was handed back to the EC, with the reason
 
-        // Manual fan percent, 0 for the EC curve. Not saved: every start begins on the EC curve.
+        // Scenes, the first group of the menu: the three official modes as they are, the everyday quiet mode
+        // (office mode, Best power efficiency, quiet fans, GPU at 1.2 GHz) and full power (performance mode,
+        // Best performance). Picking a scene puts the fan, CPU and GPU menus back on "auto", which follows it.
+        public const int SceneQuiet = 4, SceneFull = 5;
+        const int QuietGpuMhz = 1200;
+        public event Action SceneChanged;
+
+        // Fan menu choice: FanAuto follows the scene, 0 is the EC curve, otherwise a manual percent.
+        // Not saved: every start begins on auto. Manual percent is handed back (to auto) when hot.
+        public const int FanAuto = -1;
         const double FanSafeTempC = 85;
-        volatile int fanPercent;
+        volatile int fanPercent, fanChoice = FanAuto;
         int fanUnknownTemp;
-        // The menu shows -1 for the quiet mode.
-        public const int FanQuietLevel = -1;
-        public int FanPercent { get { return fanQuiet ? FanQuietLevel : fanPercent; } }
+        public int FanChoice { get { return fanChoice; } }
 
         // Quiet mode has three stages: fans stopped, a low stage at a fixed QuietLowPercent, and the EC curve.
         // The package sensor jumps by 20 C from one second to the next at idle, so changes use averages over several
@@ -192,8 +201,8 @@ namespace XingyaoPerf
             // A crash or power loss may have left a manual speed in the EC, so always start on the EC curve.
             // This is here, not in InitSensors, because --selftest must not write anything.
             if (fans != null) try { fans.SetFanAuto(); } catch (Exception e) { Log.Write("fan auto at start: " + e.Message); }
-            fanQuiet = fans != null && settings.FanQuiet; // the quiet mode is kept across restarts; it starts on the EC curve
-            ApplyQuietPowerMode();
+            fanQuiet = fans != null && settings.Scene == SceneQuiet; // the scene is kept across restarts; the quiet fans start on the EC curve
+            ApplyScenePowerMode();
             int tick = 0;
             var last = DateTime.UtcNow;
             bool checkCaps = true;
@@ -234,9 +243,16 @@ namespace XingyaoPerf
                         try { Firmware.SetMode(settings.Mode); mode = settings.Mode; Log.Write("restored mode " + mode); }
                         catch (Exception e) { Log.Write("restore failed: " + e.Message); }
                     }
-                    else { settings.Mode = mode; settings.Save(); } // Changed elsewhere, such as the Fn key.
+                    else
+                    {
+                        // Changed elsewhere, such as the Fn key: that official mode becomes the scene.
+                        settings.Mode = mode;
+                        settings.Save();
+                        Log.Write("mode changed elsewhere to " + mode);
+                        if (settings.Scene != mode) ApplyScene(mode, false);
+                    }
                 }
-                else if (settings.Mode == 0) { settings.Mode = mode; settings.Save(); }
+                else if (settings.Mode == 0) { settings.Mode = mode; if (settings.Scene == 0) settings.Scene = mode; settings.Save(); }
             }
             Publish(mode);
         }
@@ -249,30 +265,52 @@ namespace XingyaoPerf
             if (h != null) h(mode);
         }
 
-        // Called from a worker thread when the user picks a mode. Throws if the write is not confirmed.
-        public void SetMode(int mode)
+        static int FirmwareModeFor(int scene) { return scene == SceneQuiet ? 1 : scene == SceneFull ? 3 : scene; }
+
+        // Called from a worker thread when the user picks a scene. Throws if the mode write is not confirmed.
+        public void SetScene(int scene)
         {
+            if (scene < 1 || scene > SceneFull) throw new ArgumentOutOfRangeException("scene");
+            int mode = FirmwareModeFor(scene);
             lock (modeGate)
             {
                 Firmware.SetMode(mode);
                 settings.Mode = mode;
-                settings.Save();
+                ApplyScene(scene, true);
             }
             Publish(mode);
         }
 
-        // 0 hands the fans back to the EC curve, FanQuietLevel picks the quiet mode. Called from a worker thread.
+        // Sets the Windows power mode, and puts the fan, CPU and GPU choices back on auto and applies them.
+        // Each step logs its own failure so one broken part does not stop the rest.
+        void ApplyScene(int scene, bool picked)
+        {
+            settings.Scene = scene;
+            settings.CpuState = 0;
+            settings.GpuMaxMhz = 0;
+            settings.Save();
+            Log.Write("scene " + scene + (picked ? "" : " (follows the mode)"));
+            ApplyScenePowerMode();
+            if (fans != null) try { SetFan(FanAuto); } catch (Exception e) { Log.Write("scene fan: " + e.Message); }
+            try { CpuCap.SetPercent(CpuPercent); } catch (Exception e) { Log.Write("scene cpu: " + e.Message); }
+            var g = gpu;
+            if (g != null && g.CanControl) try { g.SetMaxMhz(GpuMhz); } catch (Exception e) { Log.Write("scene gpu: " + e.Message); }
+            var h = SceneChanged;
+            if (h != null) h();
+        }
+
+        public int Scene { get { return settings.Scene; } }
+        int CpuPercent { get { return settings.CpuState == 0 ? 100 : settings.CpuState; } }
+        int GpuMhz { get { return settings.GpuMaxMhz != 0 ? settings.GpuMaxMhz : settings.Scene == SceneQuiet ? QuietGpuMhz : 0; } }
+
+        // FanAuto follows the scene (quiet fans in the quiet scene, otherwise the EC curve), 0 is the EC curve,
+        // otherwise a manual percent. Called from a worker thread.
         public void SetFan(int percent)
         {
             var f = fans;
             if (f == null) throw new InvalidOperationException("EC 端口不可用");
-            bool quiet = percent == FanQuietLevel;
-            if (settings.FanQuiet != quiet)
-            {
-                if (quiet) EnterQuietPowerMode(); else LeaveQuietPowerMode();
-                settings.FanQuiet = quiet;
-                settings.Save();
-            }
+            bool quiet = percent == FanAuto && settings.Scene == SceneQuiet;
+            fanChoice = percent;
             quietHold = QuietWindow;
             fanQuiet = false;
             quietCool = 0;
@@ -280,7 +318,7 @@ namespace XingyaoPerf
             {
                 f.SetFanAuto(); fanPercent = 0; quietState = QuietEc;
                 fanQuiet = quiet;
-                Log.Write(quiet ? "fan quiet mode" : "fan auto");
+                Log.Write(quiet ? "fan quiet mode" : percent == FanAuto ? "fan auto (EC)" : "fan EC curve");
                 return;
             }
             f.SetFanPercent(percent);
@@ -292,7 +330,7 @@ namespace XingyaoPerf
 
         void ReleaseFan(string why)
         {
-            try { SetFan(0); } catch (Exception e) { Log.Write("fan release failed: " + e.Message); }
+            try { SetFan(FanAuto); } catch (Exception e) { Log.Write("fan release failed: " + e.Message); }
             Log.Write("fan released: " + why);
             var h = FanReleased;
             if (h != null) h(why);
@@ -390,44 +428,20 @@ namespace XingyaoPerf
             quietState = QuietEc; quietCool = 0; quietHold = QuietMinOn;
         }
 
-        // The quiet mode also puts Windows on "Best power efficiency", and puts the previous mode back on leaving.
-        void EnterQuietPowerMode()
-        {
-            try
-            {
-                Guid now = PowerMode.Get();
-                if (now != PowerMode.BestEfficiency) settings.QuietSavedPowerMode = now.ToString();
-                PowerMode.Set(PowerMode.BestEfficiency);
-                Log.Write("quiet: power mode set to best efficiency (was " + now + ")");
-            }
-            catch (Exception e) { Log.Write("quiet: power mode: " + e.Message); }
-        }
-
-        void LeaveQuietPowerMode()
-        {
-            if (settings.QuietSavedPowerMode.Length == 0) return;
-            try
-            {
-                PowerMode.Set(new Guid(settings.QuietSavedPowerMode));
-                Log.Write("quiet: power mode restored to " + settings.QuietSavedPowerMode);
-            }
-            catch (Exception e) { Log.Write("quiet: power mode restore: " + e.Message); }
-            settings.QuietSavedPowerMode = "";
-        }
-
         // Windows keeps the power mode per power source, so it is applied again at start and when AC changes.
-        public void ApplyQuietPowerMode()
+        public void ApplyScenePowerMode()
         {
-            if (!settings.FanQuiet) return;
+            int scene = settings.Scene;
+            if (scene == 0) return;
+            Guid want = scene == SceneQuiet ? PowerMode.BestEfficiency : scene == SceneFull ? PowerMode.BestPerformance : PowerMode.Balanced;
             try
             {
                 Guid now = PowerMode.Get();
-                if (now == PowerMode.BestEfficiency) return;
-                if (settings.QuietSavedPowerMode.Length == 0) { settings.QuietSavedPowerMode = now.ToString(); settings.Save(); }
-                PowerMode.Set(PowerMode.BestEfficiency);
-                Log.Write("quiet: power mode reapplied (was " + now + ")");
+                if (now == want) return;
+                PowerMode.Set(want);
+                Log.Write("power mode set to " + want + " (was " + now + ")");
             }
-            catch (Exception e) { Log.Write("quiet: power mode: " + e.Message); }
+            catch (Exception e) { Log.Write("power mode: " + e.Message); }
         }
 
         // Called on the UI timer. If sampling stalls while the fans are stopped, give them back to the EC from here.
@@ -447,19 +461,23 @@ namespace XingyaoPerf
         public bool GpuCapAvailable { get { var g = gpu; return g != null && g.CanControl; } }
         public double GpuHwMaxMhz { get { var g = gpu; return g == null ? 0 : g.HwMaxMhz; } }
 
+        // GPU menu choice in MHz, 0 for auto.
         public void SetGpuMax(int mhz)
         {
             var g = gpu;
             if (g == null) throw new InvalidOperationException("GPU 频率接口不可用");
-            g.SetMaxMhz(mhz);
+            int old = settings.GpuMaxMhz;
             settings.GpuMaxMhz = mhz;
+            try { g.SetMaxMhz(GpuMhz); }
+            catch { settings.GpuMaxMhz = old; throw; }
             settings.Save();
-            Log.Write("gpu max set to " + mhz);
+            Log.Write("gpu max set to " + mhz + " (applied " + GpuMhz + ")");
         }
 
+        // CPU menu choice in percent, 0 for auto (no limit).
         public void SetCpuState(int percent)
         {
-            CpuCap.SetPercent(percent);
+            CpuCap.SetPercent(percent == 0 ? 100 : percent);
             settings.CpuState = percent;
             settings.Save();
             Log.Write("cpu max state set to " + percent);
@@ -476,9 +494,10 @@ namespace XingyaoPerf
                     settings.CpuMaxMhz = 0;
                     settings.Save();
                 }
-                if (settings.CpuState == 100) return; // the default is left to Windows and other software
+                int want = CpuPercent;
+                if (want == 100) return; // the default is left to Windows and other software
                 int now = CpuCap.ReadPercent();
-                if (now != settings.CpuState) { CpuCap.SetPercent(settings.CpuState); Log.Write("cpu max state reapplied " + settings.CpuState + " (was " + now + ")"); }
+                if (now != want) { CpuCap.SetPercent(want); Log.Write("cpu max state reapplied " + want + " (was " + now + ")"); }
             }
             catch (Exception e) { Log.Write("cpu cap: " + e.Message); }
         }
@@ -486,12 +505,13 @@ namespace XingyaoPerf
         void KeepGpuCap()
         {
             var g = gpu;
-            if (g == null || !g.CanControl || settings.GpuMaxMhz <= 0) return;
+            int want = GpuMhz;
+            if (g == null || !g.CanControl || want <= 0) return;
             try
             {
                 double min, max;
                 g.GetRange(out min, out max);
-                if (Math.Abs(max - Math.Max(GpuFreq.LowestCapMhz, Math.Min(settings.GpuMaxMhz, g.HwMaxMhz))) > 1) { g.SetMaxMhz(settings.GpuMaxMhz); Log.Write("gpu max reapplied " + settings.GpuMaxMhz); }
+                if (Math.Abs(max - Math.Max(GpuFreq.LowestCapMhz, Math.Min(want, g.HwMaxMhz))) > 1) { g.SetMaxMhz(want); Log.Write("gpu max reapplied " + want); }
             }
             catch (Exception e) { Log.Write("gpu cap: " + e.Message); }
         }

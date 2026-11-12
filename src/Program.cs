@@ -58,14 +58,17 @@ namespace XingyaoPerf
         readonly Overlay overlay = new Overlay();
         readonly GameOverlay game = new GameOverlay();
         readonly ToolStripMenuItem[] gameItems = new ToolStripMenuItem[3];
-        static readonly int[] CpuStates = { 100, 99, 80, 70 };
-        static readonly string[] CpuStateNames = { "不限制", "关闭睿频（约 1.8 GHz）", "约 1.5 GHz", "约 1.3 GHz" };
+        static readonly string[] SceneNames = { "未知", "办公模式", "平衡模式", "性能模式", "日常静音模式", "火力全开模式" };
+        // 0 is "auto" in the CPU and GPU menus: no CPU limit; the GPU at 1.2 GHz in the quiet scene, otherwise no limit.
+        static readonly int[] CpuStates = { 0, 99, 80, 70 };
+        static readonly string[] CpuStateNames = { "自动（不限制）", "关闭睿频（约 1.8 GHz）", "约 1.5 GHz", "约 1.3 GHz" };
         static readonly int[] GpuCaps = { 0, 2000, 1600, 1200, 900 };
-        static readonly int[] FanLevels = { 0, 100, 70, 50, 30 };
+        static readonly int[] FanLevels = { Monitor.FanAuto, 0, 100, 70, 50, 30 };
+        readonly ToolStripMenuItem officialMenu = new ToolStripMenuItem("官方模式");
+        readonly ToolStripMenuItem[] sceneItems = new ToolStripMenuItem[6];
         readonly ToolStripMenuItem fanMenu = new ToolStripMenuItem("风扇");
         readonly ToolStripMenuItem cpuMenu = new ToolStripMenuItem("CPU 最高频率"), gpuMenu = new ToolStripMenuItem("GPU 最高频率");
         readonly ContextMenuStrip menu = new ContextMenuStrip();
-        readonly ToolStripMenuItem[] modeItems = new ToolStripMenuItem[4];
         readonly ToolStripMenuItem overlayItem, weatherItem, startupItem;
         readonly ToolStripMenuItem[] layoutItems = new ToolStripMenuItem[3];
         static readonly int[] ChargeLimits = { 60, 80, 0 };
@@ -81,11 +84,13 @@ namespace XingyaoPerf
         {
             ui = SynchronizationContext.Current ?? new WindowsFormsSynchronizationContext();
             monitor = new Monitor(settings);
-            for (int m = 1; m <= 3; m++)
+            for (int m = 1; m <= 5; m++)
             {
-                int mode = m;
-                modeItems[m] = new ToolStripMenuItem(Names[m], ModeIcon.Draw(m, menu.ImageScalingSize.Height), (s, e) => Pick(mode)) { Enabled = Platform.ModeWriteAllowed };
-                menu.Items.Add(modeItems[m]);
+                int scene = m;
+                var icon = m <= 3 ? ModeIcon.Draw(m, menu.ImageScalingSize.Height) : null;
+                sceneItems[m] = new ToolStripMenuItem(SceneNames[m], icon, (s, e) => Pick(scene)) { Enabled = Platform.ModeWriteAllowed };
+                if (m <= 3) officialMenu.DropDownItems.Add(sceneItems[m]); else menu.Items.Add(sceneItems[m]);
+                if (m == 3) menu.Items.Add(officialMenu);
             }
             menu.Items.Add(new ToolStripSeparator());
             overlayItem = new ToolStripMenuItem("在任务栏显示监控", null, (s, e) => ToggleOverlay()) { Checked = settings.Overlay };
@@ -118,7 +123,7 @@ namespace XingyaoPerf
             for (int i = 0; i < GpuCaps.Length; i++)
             {
                 int mhz = GpuCaps[i];
-                gpuMenu.DropDownItems.Add(new ToolStripMenuItem(mhz == 0 ? "不限制" : (mhz / 1000.0).ToString("0.0") + " GHz", null, (s, e) => PickGpuCap(mhz)) { Tag = mhz });
+                gpuMenu.DropDownItems.Add(new ToolStripMenuItem(mhz == 0 ? "自动（日常静音 1.2 GHz，其他不限制）" : (mhz / 1000.0).ToString("0.0") + " GHz", null, (s, e) => PickGpuCap(mhz)) { Tag = mhz });
             }
             cpuMenu.DropDownOpening += (s, e) => RefreshCaps();
             gpuMenu.DropDownOpening += (s, e) => RefreshCaps();
@@ -126,17 +131,17 @@ namespace XingyaoPerf
             for (int i = 0; i < FanLevels.Length; i++)
             {
                 int level = FanLevels[i];
-                fanMenu.DropDownItems.Add(new ToolStripMenuItem(level == 0 ? "自动（EC 曲线）" : level == 100 ? "全速 100%" : level + "%", null, (s, e) => PickFan(level)) { Tag = level });
-                if (level == 0)
-                    fanMenu.DropDownItems.Add(new ToolStripMenuItem("静音：低温时停转，并用最佳能效", null, (s, e) => PickFan(Monitor.FanQuietLevel)) { Tag = Monitor.FanQuietLevel });
+                string name = level == Monitor.FanAuto ? "自动（日常静音：低温停转；其他：EC 曲线）" : level == 0 ? "EC 曲线" : level == 100 ? "全速 100%" : level + "%";
+                fanMenu.DropDownItems.Add(new ToolStripMenuItem(name, null, (s, e) => PickFan(level)) { Tag = level });
             }
             fanMenu.Enabled = Platform.FanReadAllowed;
-            fanMenu.DropDownOpening += (s, e) => Check(fanMenu, monitor.FanPercent);
-            Check(fanMenu, settings.FanQuiet ? Monitor.FanQuietLevel : 0);
-            monitor.FanReleased += why => ui.Post(_ => { Check(fanMenu, 0); tray.ShowBalloonTip(5000, "风扇已恢复自动", "原因：" + why, ToolTipIcon.Warning); }, null);
+            fanMenu.DropDownOpening += (s, e) => Check(fanMenu, monitor.FanChoice);
+            Check(fanMenu, Monitor.FanAuto);
+            monitor.FanReleased += why => ui.Post(_ => { Check(fanMenu, Monitor.FanAuto); tray.ShowBalloonTip(5000, "风扇已恢复自动", "原因：" + why, ToolTipIcon.Warning); }, null);
+            monitor.SceneChanged += () => ui.Post(_ => { ShowMode(monitor.CurrentMode); Check(fanMenu, monitor.FanChoice); RefreshCaps(); }, null);
             Microsoft.Win32.SystemEvents.PowerModeChanged += (s, e) => { if (e.Mode == Microsoft.Win32.PowerModes.Suspend) monitor.OnSuspend(); };
             Microsoft.Win32.SystemEvents.SessionEnding += (s, e) => monitor.OnSuspend(); // shutdown or sign-out
-            Microsoft.Win32.SystemEvents.PowerModeChanged += (s, e) => { if (e.Mode == Microsoft.Win32.PowerModes.StatusChange) monitor.ApplyQuietPowerMode(); };
+            Microsoft.Win32.SystemEvents.PowerModeChanged += (s, e) => { if (e.Mode == Microsoft.Win32.PowerModes.StatusChange) monitor.ApplyScenePowerMode(); };
             menu.Items.Add(fanMenu);
             menu.Items.Add(cpuMenu);
             menu.Items.Add(gpuMenu);
@@ -204,14 +209,14 @@ namespace XingyaoPerf
             overlay.Track_();
         }
 
-        void Pick(int mode)
+        void Pick(int scene)
         {
             ThreadPool.QueueUserWorkItem(_ =>
             {
-                try { monitor.SetMode(mode); }
+                try { monitor.SetScene(scene); }
                 catch (Exception e)
                 {
-                    Log.Write("set mode " + mode + ": " + e.Message);
+                    Log.Write("set scene " + scene + ": " + e.Message);
                     ui.Post(__ => tray.ShowBalloonTip(5000, "切换失败", e.Message, ToolTipIcon.Error), null);
                 }
             });
@@ -219,7 +224,9 @@ namespace XingyaoPerf
 
         void ShowMode(int mode)
         {
-            for (int m = 1; m <= 3; m++) modeItems[m].Checked = m == mode;
+            int scene = monitor.Scene;
+            for (int m = 1; m <= 5; m++) sceneItems[m].Checked = m == scene;
+            officialMenu.Checked = scene >= 1 && scene <= 3;
             using (var bmp = ModeIcon.Draw(mode, SystemInformation.SmallIconSize.Height))
             {
                 IntPtr h = bmp.GetHicon();
@@ -227,7 +234,7 @@ namespace XingyaoPerf
                 if (iconHandle != IntPtr.Zero) Native.DestroyIcon(iconHandle);
                 iconHandle = h;
             }
-            tray.Text = "xingyao-perf: " + Names[mode];
+            tray.Text = "xingyao-perf: " + SceneNames[scene >= 1 && scene <= 5 ? scene : mode];
         }
 
         void ToggleOverlay()
