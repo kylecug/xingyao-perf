@@ -1,3 +1,5 @@
+# NOTE: on this machine (2026-11-12) every register read back as 0 and each mapping took about a minute, so this
+# does not work here; see docs/protocol.md. Kept for reference.
 # Reads the package power limits (PL1, PL2) that are in force through the processor's MMIO RAPL registers.
 # Read only: it maps one 4 KB page of the processor thermal device (PCI 00:04.0, Intel IPF Processor Participant,
 # device B01D) through the inpoutx64 driver already installed here, reads it and unmaps it. Nothing is written.
