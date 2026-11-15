@@ -34,6 +34,7 @@ namespace XingyaoPerf
         public int CpuState; // CPU menu choice: maximum processor state in percent, 0 = auto (no limit); reapplied in case the plan changes
         public int GameOverlay = 1; // 0 off, 1 listed games only, 2 any fullscreen app (and listed games)
         public string Games = ""; // extra game process names without .exe, separated by |, beyond the ones Windows recognises
+        public string Esp = "hw675.local"; // desk display that gets each sample over UDP (see EspLink); empty = off
 
         public static Settings Load()
         {
@@ -53,6 +54,7 @@ namespace XingyaoPerf
                     else if (kv[0] == "fanquiet") fanQuiet = kv[1] == "1"; // before 0.9.16 the quiet mode was a fan setting
                     else if (kv[0] == "gameoverlay") { int.TryParse(kv[1], out s.GameOverlay); if (s.GameOverlay < 0 || s.GameOverlay > 2) s.GameOverlay = 1; }
                     else if (kv[0] == "games") s.Games = kv[1];
+                    else if (kv[0] == "esp") s.Esp = kv[1].Trim();
                     else if (kv[0] == "gpumax") int.TryParse(kv[1], out s.GpuMaxMhz);
                     else if (kv[0] == "cpumax") int.TryParse(kv[1], out s.CpuMaxMhz);
                     else if (kv[0] == "cpustate") { int.TryParse(kv[1], out s.CpuState); if (s.CpuState < 50 || s.CpuState >= 100) s.CpuState = 0; }
@@ -79,7 +81,7 @@ namespace XingyaoPerf
             try
             {
                 Directory.CreateDirectory(Log.Dir);
-                File.WriteAllText(FilePath, "mode=" + Mode + "\noverlay=" + (Overlay ? "1" : "0") + "\navoidweather=" + (AvoidWeather ? "1" : "0") + "\nlayout=" + Layout + "\ngameoverlay=" + GameOverlay + "\ngames=" + Games + "\ngpumax=" + GpuMaxMhz + "\ncpumax=" + CpuMaxMhz + "\ncpustate=" + CpuState + "\nscene=" + Scene + CustomLines() + "\n");
+                File.WriteAllText(FilePath, "mode=" + Mode + "\noverlay=" + (Overlay ? "1" : "0") + "\navoidweather=" + (AvoidWeather ? "1" : "0") + "\nlayout=" + Layout + "\ngameoverlay=" + GameOverlay + "\ngames=" + Games + "\nesp=" + Esp + "\ngpumax=" + GpuMaxMhz + "\ncpumax=" + CpuMaxMhz + "\ncpustate=" + CpuState + "\nscene=" + Scene + CustomLines() + "\n");
             }
             catch (Exception e) { Log.Write("save settings: " + e.Message); }
         }
@@ -100,7 +102,8 @@ namespace XingyaoPerf
         readonly object modeGate = new object();
         DateTime restoreUntil;
 
-        CounterSet counters; FanReader fans; GpuFreq gpu; PackageTemp temp; BatteryPower battery;
+        CounterSet counters; FanReader fans; GpuFreq gpu; PackageTemp temp; BatteryPower battery; EspLink esp;
+        static readonly string[] OfficialNames = { "未知", "办公模式", "平衡模式", "性能模式" };
         int currentMode, fanFailures, fanPauseTicks, tempPauseTicks;
         public static bool SkipGpu; // --no-gpu: the frequency library is the largest memory user.
 
@@ -198,9 +201,19 @@ namespace XingyaoPerf
             return s;
         }
 
+        string SceneName()
+        {
+            var p = CustomProfile;
+            if (p != null) return p.Name;
+            int s = settings.Scene >= 1 && settings.Scene <= 3 ? settings.Scene : currentMode;
+            return OfficialNames[s >= 0 && s <= 3 ? s : 0];
+        }
+
         void Run()
         {
             InitSensors();
+            // Not in InitSensors: --selftest must not send anything.
+            if (settings.Esp.Length > 0) Try("esp display", () => esp = new EspLink(settings.Esp));
             // A crash or power loss may have left a manual speed in the EC, so always start on the EC curve.
             // This is here, not in InitSensors, because --selftest must not write anything.
             // SetFan(FanAuto) sends D5 10 first, then follows the saved scene (a custom curve starts from the EC curve).
@@ -220,6 +233,7 @@ namespace XingyaoPerf
                 if (tick++ % ModeEveryTicks == 0) CheckMode();
                 latest = SampleOnce();
                 lastSampleAt = DateTime.UtcNow;
+                if (esp != null) try { esp.Send(latest, SceneName()); } catch (Exception e) { Log.Write("esp display: " + e.Message); esp = null; }
                 if (fanPercent > 0) KeepFan(latest);
                 else if (fanCurve != null) CurveFan(latest);
                 Thread.Sleep(IntervalMs);
@@ -548,6 +562,7 @@ namespace XingyaoPerf
             if (counters != null) counters.Dispose();
             if (fans != null) fans.Dispose();
             if (gpu != null) gpu.Dispose();
+            if (esp != null) esp.Dispose();
         }
     }
 }
