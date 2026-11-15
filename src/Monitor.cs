@@ -34,7 +34,7 @@ namespace XingyaoPerf
         public int CpuState; // CPU menu choice: maximum processor state in percent, 0 = auto (no limit); reapplied in case the plan changes
         public int GameOverlay = 1; // 0 off, 1 listed games only, 2 any fullscreen app (and listed games)
         public string Games = ""; // extra game process names without .exe, separated by |, beyond the ones Windows recognises
-        public string Esp = "hw675.local"; // desk display that gets each sample over UDP (see EspLink); empty = off
+        public string Esp = EspLink.Broadcast; // desk displays that get each sample over UDP (see EspLink): broadcast, one host, or empty = off
 
         public static Settings Load()
         {
@@ -54,7 +54,7 @@ namespace XingyaoPerf
                     else if (kv[0] == "fanquiet") fanQuiet = kv[1] == "1"; // before 0.9.16 the quiet mode was a fan setting
                     else if (kv[0] == "gameoverlay") { int.TryParse(kv[1], out s.GameOverlay); if (s.GameOverlay < 0 || s.GameOverlay > 2) s.GameOverlay = 1; }
                     else if (kv[0] == "games") s.Games = kv[1];
-                    else if (kv[0] == "esp") s.Esp = kv[1].Trim();
+                    else if (kv[0] == "esp") { s.Esp = kv[1].Trim(); if (s.Esp == "hw675.local") s.Esp = EspLink.Broadcast; } // 0.9.25 default -> broadcast (0.9.26)
                     else if (kv[0] == "gpumax") int.TryParse(kv[1], out s.GpuMaxMhz);
                     else if (kv[0] == "cpumax") int.TryParse(kv[1], out s.CpuMaxMhz);
                     else if (kv[0] == "cpustate") { int.TryParse(kv[1], out s.CpuState); if (s.CpuState < 50 || s.CpuState >= 100) s.CpuState = 0; }
