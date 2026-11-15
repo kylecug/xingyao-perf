@@ -130,12 +130,27 @@ namespace XingyaoPerf
                 Thread.Sleep(1);
             }
         }
-        // Only RPM queries can be issued. Pending output belongs to another client, so the sample is skipped.
+        // Called with the mutex held, so no cooperating client is mid-exchange. A reply that arrives after a
+        // timed-out transaction stays in the output buffer forever and blocks every later read and write
+        // (seen 2026-11-13: stuck for a day). Give any other client 200 ms, then read the stale byte off.
+        // This only reads port 0x68; nothing is sent to the EC.
+        void Ready(string what)
+        {
+            Wait(2, 0);
+            if ((In(0x6c) & 1) == 0) return;
+            Thread.Sleep(200);
+            for (int k = 0; k < 4 && (In(0x6c) & 1) != 0; k++)
+            {
+                Log.Write("ec: drained stale output byte 0x" + In(0x68).ToString("X2"));
+                Thread.Sleep(5);
+            }
+            if ((In(0x6c) & 1) != 0) throw new IOException(what);
+        }
+        // Only RPM queries can be issued.
         byte Query(byte arg)
         {
             if (arg < 0x16 || arg > 0x19) throw new ArgumentException("query not allowed");
-            Wait(2, 0);
-            if ((In(0x6c) & 1) != 0) throw new IOException("EC output pending");
+            Ready("EC output pending");
             Out(0x6c, 0xd5); Wait(2, 0); Out(0x68, arg); Wait(1, 1);
             return In(0x68);
         }
@@ -166,8 +181,7 @@ namespace XingyaoPerf
             bool ok = (cmd == 0xf1 && arg >= 0x10 && arg <= 0x14) || ((cmd == 0xf2 || cmd == 0xf3) && arg <= 100)
                 || cmd == 0xd6 || (cmd == 0xd5 && arg == 0x10);
             if (!ok) throw new ArgumentException("command not allowed");
-            Wait(2, 0);
-            if ((In(0x6c) & 1) != 0) throw new IOException("EC output pending, nothing sent");
+            Ready("EC output pending, nothing sent");
             Out(0x6c, cmd); Wait(2, 0); Out(0x68, arg);
             if (reply) { Wait(1, 1); return In(0x68); }
             // These commands do not reply. Read any stray byte so it is not taken as the next answer.

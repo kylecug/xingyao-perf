@@ -170,3 +170,7 @@ open-revo 的写入顺序：关闭 → 设上阈值 → 设下阈值 → 启用 
 - **读 PL1/PL2 失败（2026-11-12，`scripts/read-pl.ps1`，管理员，官方办公模式）：** 通过 inpoutx64 把处理器热管理设备（PCI 00:04.0，`DEV_B01D`，寄存器区 `0x130132C0000`，128 KB）的第 0x5000 页映射出来读，功耗单位（0x5938）、能量计数（0x593C）和功耗限制（0x59A0）全部读到 0，能量计数也不变化，每次映射还要约 1 分钟。说明映射没有读到真实寄存器（可能是 Windows 不允许通过 `\Device\PhysicalMemory` 映射这块设备内存，或 Panther Lake 的偏移不同），所以 MMIO 这条路读不到 PL。MSR 0x610 需要别的驱动（如 WinRing0，会被 Defender 当作有漏洞的驱动拦截），没有尝试。设置窗口里的功耗档位因此用实测的持续和峰值功耗表示。
 - **HWMonitor 读到的 PL（2026-11-12，用户读取）：** 三个官方模式下都是 PL1 40 W、PL2 65 W，不随模式变化。HWMonitor 读的应是 MSR 0x610 那份。实测持续功耗为办公 22 W、平衡 34 W、性能 40 W（性能模式正好等于 PL1），峰值只到约 46 W，说明模式切换改的是另一层限制（很可能是 BIOS/EC 经 Intel DTT 写的 MMIO RAPL 限制，生效值取两者较低者），PL2 也被别处压在约 46 W（MMIO PL2 或 PL4 / ICCmax，未查明，`Performance Limit Flags` 为 0，不是温度）。
 - **风扇停转后的温度：** 在 5–7 W 轻负载下风扇停转后，封装温度会平衡在约 55–60 °C。按 50 / 55 °C 阈值时，16:53–17:05 之间停转、交还了 9 次，多数停转只维持 4–24 秒。
+
+## Stale EC output byte (2026-11-15)
+
+From 2026-11-13 23:17 the PM2 status port (0x6C) read 0x01 for over a day: a reply left in the output buffer, most likely from a transaction that timed out before reading it. Every read and write refused to run while it was there, so fan RPM disappeared and the curve could not write. Since 0.9.28, with the shared mutex held, a byte still pending after 200 ms is read off port 0x68 and logged (`ec: drained stale output byte`). Only a read; no command is sent.
