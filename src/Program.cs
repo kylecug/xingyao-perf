@@ -58,6 +58,9 @@ namespace XingyaoPerf
         readonly Overlay overlay = new Overlay();
         readonly GameOverlay game = new GameOverlay();
         readonly ToolStripMenuItem[] gameItems = new ToolStripMenuItem[3];
+        ToolStripMenuItem autoGameMenu;
+        int autoPrev, autoSet, scanTick, gameGone; // scene before the game, scene set for it
+        bool scanBusy;
         // 0 is "auto" in the CPU and GPU menus: no limit in the official modes, the custom scene's setting otherwise.
         static readonly int[] CpuStates = { 0, 99, 80, 70 };
         static readonly string[] CpuStateNames = { "自动（跟随模式）", "关闭睿频（约 1.8 GHz）", "约 1.5 GHz", "约 1.3 GHz" };
@@ -91,8 +94,7 @@ namespace XingyaoPerf
                 sceneItems[m] = new ToolStripMenuItem(Names[m], ModeIcon.Draw(m, menu.ImageScalingSize.Height), (s, e) => Pick(scene)) { Enabled = Platform.ModeWriteAllowed };
                 officialMenu.DropDownItems.Add(sceneItems[m]);
             }
-            menu.Items.Add(officialMenu);
-            // A custom scene is picked by clicking it; its submenu holds only "settings".
+            menu.Items.Add(officialMenu);            // A custom scene is picked by clicking it; its submenu holds only "settings".
             for (int m = Monitor.SceneCustom; m <= Monitor.SceneLast; m++)
             {
                 int scene = m;
@@ -166,8 +168,16 @@ namespace XingyaoPerf
                 gameMenu.DropDownItems.Add(gameItems[i]);
             }
             game.SetGames(settings.Games.Split(new[] { '|' }, StringSplitOptions.RemoveEmptyEntries));
+            // Switch to a chosen scene while a game runs, and back when it ends.
+            autoGameMenu = new ToolStripMenuItem("游戏时自动切换模式") { Enabled = Platform.ModeWriteAllowed };
+            for (int i = 0; i <= Monitor.SceneLast; i++)
+            {
+                int scene = i;
+                autoGameMenu.DropDownItems.Add(new ToolStripMenuItem(i == 0 ? "关闭" : SceneName(i), null, (s, e) => PickAutoGame(scene)) { Tag = i, Checked = settings.AutoGame == i });
+            }
             menu.Items.Add(overlayItem);
             menu.Items.Add(gameMenu);
+            menu.Items.Add(autoGameMenu);
             menu.Items.Add(layoutMenu);
             menu.Items.Add(weatherItem);
             menu.Items.Add(startupItem);
@@ -185,7 +195,13 @@ namespace XingyaoPerf
                 if (e.Button != MouseButtons.Left) return;
                 if (showMenu != null) showMenu.Invoke(tray, null); else menu.Show(Cursor.Position);
             };
-            overlay.Click += () => menu.Show(Cursor.Position);
+            // The bar window never activates, so menu.Show alone leaves the menu without focus: it then ignores
+            // clicks elsewhere and stays open. The tray's own path takes the foreground first.
+            overlay.Click += () =>
+            {
+                if (menu.Visible) { menu.Close(); return; }
+                if (showMenu != null) showMenu.Invoke(tray, null); else menu.Show(Cursor.Position);
+            };
             ShowMode(0);
             tray.Visible = true;
 
@@ -212,6 +228,7 @@ namespace XingyaoPerf
             var latest = monitor.Latest;
             if (latest != gameShown) { gameShown = latest; game.SetValues(latest); }
             game.Track(settings.GameOverlay);
+            ScanGames();
             monitor.Watchdog();
             if (!settings.Overlay) { if (overlay.Visible) overlay.Hide(); return; }
             var s = monitor.Latest;
@@ -241,7 +258,11 @@ namespace XingyaoPerf
             customForm.Saved += (profiles, switchTo) =>
             {
                 monitor.SetCustom(profiles);
-                for (int i = 0; i < profiles.Length; i++) sceneItems[Monitor.SceneCustom + i].Text = CustomPrefix + profiles[i].Name;
+                for (int i = 0; i < profiles.Length; i++)
+                {
+                    sceneItems[Monitor.SceneCustom + i].Text = CustomPrefix + profiles[i].Name;
+                    autoGameMenu.DropDownItems[Monitor.SceneCustom + i].Text = CustomPrefix + profiles[i].Name;
+                }
                 int active = monitor.Scene;
                 // Apply the new settings: the chosen tab, or the active custom scene if it was edited.
                 if (switchTo >= 0) Pick(Monitor.SceneCustom + switchTo);
@@ -372,6 +393,58 @@ namespace XingyaoPerf
             if (want && probe == null) probe = new TaskbarProbe();
             else if (!want && probe != null) { probe.Dispose(); probe = null; }
             overlay.Probe = probe;
+        }
+
+        string SceneName(int scene)
+        {
+            return scene >= Monitor.SceneCustom ? CustomPrefix + settings.Custom[scene - Monitor.SceneCustom].Name : Names[scene];
+        }
+
+        void PickAutoGame(int scene)
+        {
+            settings.AutoGame = scene;
+            Check(autoGameMenu, scene);
+            settings.Save();
+            if (scene == 0 && autoPrev != 0) { RestoreAfterGame(); }
+        }
+
+        void RestoreAfterGame()
+        {
+            if (monitor.Scene == autoSet) Pick(autoPrev); // not if the user chose another scene meanwhile
+            autoPrev = 0;
+        }
+
+        // Every 3 s on a worker thread: is a game running? Switch when one starts; switch back 6 s after the last one ends.
+        void ScanGames()
+        {
+            if (settings.AutoGame == 0 && autoPrev == 0) return;
+            if (++scanTick < 6 || scanBusy) return;
+            scanTick = 0;
+            scanBusy = true;
+            ThreadPool.QueueUserWorkItem(_ =>
+            {
+                bool running = game.AnyGameRunning();
+                ui.Post(__ =>
+                {
+                    scanBusy = false;
+                    if (running)
+                    {
+                        gameGone = 0;
+                        int want = settings.AutoGame;
+                        if (want != 0 && autoPrev == 0 && monitor.Scene != want)
+                        {
+                            autoPrev = monitor.Scene; autoSet = want;
+                            Log.Write("game started: scene " + autoPrev + " -> " + want);
+                            Pick(want);
+                        }
+                    }
+                    else if (autoPrev != 0 && ++gameGone >= 2)
+                    {
+                        Log.Write("game ended: back to scene " + autoPrev);
+                        RestoreAfterGame();
+                    }
+                }, null);
+            });
         }
 
         void PickGame(int when)

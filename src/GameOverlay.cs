@@ -87,9 +87,27 @@ namespace XingyaoPerf
             return hit;
         }
 
+        // True while any process Windows recognises as a game, or listed by the user, is running. Cheap enough for every few seconds.
+        public bool AnyGameRunning()
+        {
+            if ((DateTime.UtcNow - knownAt).TotalMinutes > 5) LoadKnownGames();
+            try
+            {
+                foreach (var p in Process.GetProcesses())
+                    using (p)
+                    {
+                        string name = p.ProcessName;
+                        if (known.Contains(name)) return true;
+                        foreach (var g in games) if (string.Equals(g.Trim(), name, StringComparison.OrdinalIgnoreCase)) return true;
+                    }
+            }
+            catch (Exception e) { Log.Write("game scan: " + e.Message); }
+            return false;
+        }
+
         public void Hide()
         {
-            if (shown && Handle != IntPtr.Zero) Native.ShowWindow(Handle, Native.SW_HIDE);
+            if (shown &&Handle != IntPtr.Zero) Native.ShowWindow(Handle, Native.SW_HIDE);
             shown = false;
             if (fps.Running) fps.Stop(); // frames are only counted while the overlay is up
             fpsValue = double.NaN;

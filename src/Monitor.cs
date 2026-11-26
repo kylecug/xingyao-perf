@@ -33,6 +33,7 @@ namespace XingyaoPerf
         public int CpuMaxMhz; // old frequency cap; only read so it can be cleared once
         public int CpuState; // CPU menu choice: maximum processor state in percent, 0 = auto (no limit); reapplied in case the plan changes
         public int GameOverlay = 1; // 0 off, 1 listed games only, 2 any fullscreen app (and listed games)
+        public int AutoGame; // scene (1-8) to switch to while a game runs, 0 = off
         public string Games = ""; // extra game process names without .exe, separated by |, beyond the ones Windows recognises
         public string Esp = EspLink.Broadcast; // desk displays that get each sample over UDP (see EspLink): broadcast, one host, or empty = off
 
@@ -54,6 +55,7 @@ namespace XingyaoPerf
                     else if (kv[0] == "fanquiet") fanQuiet = kv[1] == "1"; // before 0.9.16 the quiet mode was a fan setting
                     else if (kv[0] == "gameoverlay") { int.TryParse(kv[1], out s.GameOverlay); if (s.GameOverlay < 0 || s.GameOverlay > 2) s.GameOverlay = 1; }
                     else if (kv[0] == "games") s.Games = kv[1];
+                    else if (kv[0] == "autogame") { int.TryParse(kv[1], out s.AutoGame); if (s.AutoGame < 0 || s.AutoGame > Monitor.SceneLast) s.AutoGame = 0; }
                     else if (kv[0] == "esp") { s.Esp = kv[1].Trim(); if (s.Esp == "hw675.local") s.Esp = EspLink.Broadcast; } // 0.9.25 default -> broadcast (0.9.26)
                     else if (kv[0] == "gpumax") int.TryParse(kv[1], out s.GpuMaxMhz);
                     else if (kv[0] == "cpumax") int.TryParse(kv[1], out s.CpuMaxMhz);
@@ -81,7 +83,7 @@ namespace XingyaoPerf
             try
             {
                 Directory.CreateDirectory(Log.Dir);
-                File.WriteAllText(FilePath, "mode=" + Mode + "\noverlay=" + (Overlay ? "1" : "0") + "\navoidweather=" + (AvoidWeather ? "1" : "0") + "\nlayout=" + Layout + "\ngameoverlay=" + GameOverlay + "\ngames=" + Games + "\nesp=" + Esp + "\ngpumax=" + GpuMaxMhz + "\ncpumax=" + CpuMaxMhz + "\ncpustate=" + CpuState + "\nscene=" + Scene + CustomLines() + "\n");
+                File.WriteAllText(FilePath, "mode=" + Mode + "\noverlay=" + (Overlay ? "1" : "0") + "\navoidweather=" + (AvoidWeather ? "1" : "0") + "\nlayout=" + Layout + "\ngameoverlay=" + GameOverlay + "\ngames=" + Games + "\nautogame=" + AutoGame +"\nesp=" + Esp + "\ngpumax=" + GpuMaxMhz + "\ncpumax=" + CpuMaxMhz + "\ncpustate=" + CpuState + "\nscene=" + Scene + CustomLines() + "\n");
             }
             catch (Exception e) { Log.Write("save settings: " + e.Message); }
         }
