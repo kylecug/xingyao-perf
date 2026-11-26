@@ -16,7 +16,25 @@ namespace XingyaoPerf
         const string ExeName = "xingyao-perf.exe";
         static readonly string DownloadPrefix = "https://github.com/" + Repo + "/releases/download/";
 
-        public sealed class Release { public Version Version; public string Tag, ExeUrl, ShaUrl; }
+        public sealed class Release { public Version Version; public string Tag, ExeUrl, ShaUrl, Notes; }
+
+        // The release notes are a JSON string; undo its escapes.
+        static string Unescape(string s)
+        {
+            var sb = new System.Text.StringBuilder();
+            for (int i = 0; i < s.Length; i++)
+            {
+                char c = s[i];
+                if (c != '\\' || i + 1 >= s.Length) { sb.Append(c); continue; }
+                char n = s[++i];
+                if (n == 'n') sb.Append('\n');
+                else if (n == 'r') { }
+                else if (n == 't') sb.Append('\t');
+                else if (n == 'u' && i + 4 < s.Length) { sb.Append((char)Convert.ToInt32(s.Substring(i + 1, 4), 16)); i += 4; }
+                else sb.Append(n); // \" \\ \/
+            }
+            return sb.ToString().Trim();
+        }
 
         static WebClient Client()
         {
@@ -37,6 +55,8 @@ namespace XingyaoPerf
             if (!tag.Success) return null;
             var r = new Release { Tag = tag.Groups[1].Value };
             if (!Version.TryParse(r.Tag.TrimStart('v', 'V'), out r.Version)) return null;
+            var body = Regex.Match(json, "\"body\"\\s*:\\s*\"((?:[^\"\\\\]|\\\\.)*)\"");
+            if (body.Success) r.Notes = Unescape(body.Groups[1].Value);
             foreach (Match m in Regex.Matches(json, "\"browser_download_url\"\\s*:\\s*\"([^\"]+)\""))
             {
                 string url = m.Groups[1].Value;

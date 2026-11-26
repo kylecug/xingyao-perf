@@ -465,7 +465,8 @@ namespace XingyaoPerf
                 {
                     if (err != null) { EndUpdate(); tray.ShowBalloonTip(5000, "检查更新失败", err, ToolTipIcon.Error); return; }
                     if (r == null || !Updater.IsNewer(r)) { EndUpdate(); tray.ShowBalloonTip(4000, "检查更新", "已经是最新版本 " + AppVersion.Text, ToolTipIcon.Info); return; }
-                    var ask = MessageBox.Show("发现新版本 " + r.Tag + "（当前 " + AppVersion.Text + "）。\n现在下载并更新吗？更新后程序会自动重启。", "xingyao-perf",
+                    string notes = string.IsNullOrEmpty(r.Notes) ? "（没有更新说明）" : r.Notes.Length > 1500 ? r.Notes.Substring(0, 1500) + "…" : r.Notes;
+                    var ask = MessageBox.Show("发现新版本 " + r.Tag + "（当前 " + AppVersion.Text + "）。\n\n更新内容：\n" + notes + "\n\n现在下载并更新吗？更新后程序会自动重启。", "xingyao-perf",
                         MessageBoxButtons.YesNo, MessageBoxIcon.Question, MessageBoxDefaultButton.Button1, (MessageBoxOptions)0x40000);
                     if (ask != DialogResult.Yes) { EndUpdate(); return; }
                     tray.ShowBalloonTip(3000, "正在更新", "下载 " + r.Tag + " …", ToolTipIcon.Info);
