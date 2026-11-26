@@ -60,7 +60,8 @@ namespace XingyaoPerf
         readonly ToolStripMenuItem[] gameItems = new ToolStripMenuItem[3];
         ToolStripMenuItem autoGameMenu;
         int autoPrev, autoSet, scanTick, gameGone; // scene before the game, scene set for it
-        bool scanBusy;
+        bool scanBusy, updating;
+        ToolStripMenuItem updateItem;
         // 0 is "auto" in the CPU and GPU menus: no limit in the official modes, the custom scene's setting otherwise.
         static readonly int[] CpuStates = { 0, 99, 80, 70 };
         static readonly string[] CpuStateNames = { "自动（跟随模式）", "关闭睿频（约 1.8 GHz）", "约 1.5 GHz", "约 1.3 GHz" };
@@ -182,7 +183,8 @@ namespace XingyaoPerf
             menu.Items.Add(weatherItem);
             menu.Items.Add(startupItem);
             menu.Items.Add(new ToolStripSeparator());
-            menu.Items.Add(new ToolStripMenuItem("版本 " + AppVersion.Text) { Enabled = false });
+            updateItem = new ToolStripMenuItem("检查更新（版本 " + AppVersion.Text + "）", null, (s, e) => CheckUpdate());
+            menu.Items.Add(updateItem);
             menu.Items.Add("退出", null, (s, e) => Quit());
             menu.Opening += (s, e) => { startupItem.Checked = Startup.Enabled; RefreshCharge(); RefreshCaps(); };
 
@@ -446,6 +448,46 @@ namespace XingyaoPerf
                 }, null);
             });
         }
+
+        // Only runs when the user picks the menu item. Asks before downloading.
+        void CheckUpdate()
+        {
+            if (updating) return;
+            updating = true;
+            updateItem.Enabled = false;
+            ThreadPool.QueueUserWorkItem(_ =>
+            {
+                Updater.Release r = null;
+                string err = null;
+                try { r = Updater.Latest(); }
+                catch (Exception e) { err = e.Message; Log.Write("update check: " + e.Message); }
+                ui.Post(__ =>
+                {
+                    if (err != null) { EndUpdate(); tray.ShowBalloonTip(5000, "检查更新失败", err, ToolTipIcon.Error); return; }
+                    if (r == null || !Updater.IsNewer(r)) { EndUpdate(); tray.ShowBalloonTip(4000, "检查更新", "已经是最新版本 " + AppVersion.Text, ToolTipIcon.Info); return; }
+                    var ask = MessageBox.Show("发现新版本 " + r.Tag + "（当前 " + AppVersion.Text + "）。\n现在下载并更新吗？更新后程序会自动重启。", "xingyao-perf",
+                        MessageBoxButtons.YesNo, MessageBoxIcon.Question, MessageBoxDefaultButton.Button1, (MessageBoxOptions)0x40000);
+                    if (ask != DialogResult.Yes) { EndUpdate(); return; }
+                    tray.ShowBalloonTip(3000, "正在更新", "下载 " + r.Tag + " …", ToolTipIcon.Info);
+                    ThreadPool.QueueUserWorkItem(___ =>
+                    {
+                        try
+                        {
+                            string exe = Updater.Install(r);
+                            Log.Write("updated to " + r.Tag);
+                            ui.Post(____ => { Updater.RestartLater(exe); Quit(); }, null);
+                        }
+                        catch (Exception e)
+                        {
+                            Log.Write("update install: " + e.Message);
+                            ui.Post(____ => { EndUpdate(); tray.ShowBalloonTip(6000, "更新失败", e.Message + "\n没有改动当前版本。", ToolTipIcon.Error); }, null);
+                        }
+                    });
+                }, null);
+            });
+        }
+
+        void EndUpdate() { updating = false; updateItem.Enabled = true; }
 
         void PickGame(int when)
         {
